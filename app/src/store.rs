@@ -1,0 +1,70 @@
+//! The saved session: one JSON file in the user's config dir, readable by the owner only.
+//! (A system keyring is the next step; until then this is the same exposure as a browser profile.)
+
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Saved {
+    pub instance: String,
+    pub gateway: String,
+    pub api_client: String,
+    /// Media proxy host (avatars, icons, attachments); old sessions lack it until the next lookup.
+    #[serde(default)]
+    pub media: Option<String>,
+    /// Web origin to send with API writes (see `fluxer_client::rest::Endpoints::origin`).
+    #[serde(default)]
+    pub origin: Option<String>,
+    pub token: String,
+    pub user_id: String,
+    pub username: Option<String>,
+}
+
+pub fn dir() -> Option<PathBuf> {
+    // Tests and portable setups point this elsewhere so they never touch a real session.
+    if let Some(d) = std::env::var_os("FLUXER_RUX_CONFIG_DIR") { return Some(PathBuf::from(d)) }
+    let base = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join("fluxer-rune"))
+}
+
+fn file() -> Option<PathBuf> { Some(dir()?.join("session.json")) }
+
+pub fn load() -> Option<Saved> { load_from(&file()?) }
+
+pub fn save(s: &Saved) -> std::io::Result<()> {
+    save_to(&file().ok_or(std::io::ErrorKind::NotFound)?, s)
+}
+
+pub fn clear() { if let Some(f) = file() { let _ = std::fs::remove_file(f); } }
+
+pub fn load_from(path: &std::path::Path) -> Option<Saved> {
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+pub fn save_to(path: &std::path::Path, s: &Saved) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    std::fs::create_dir_all(path.parent().ok_or(std::io::ErrorKind::InvalidInput)?)?;
+    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+    f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    f.write_all(&serde_json::to_vec_pretty(s).expect("session serializes"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn session_roundtrips_and_is_private() {
+        let dir = std::env::temp_dir().join(format!("fluxer-store-{}", std::process::id()));
+        let path = dir.join("session.json");
+        let s = Saved { instance: "https://i".into(), gateway: "wss://g".into(), api_client: "https://a".into(), media: None, origin: None,
+            token: "secret".into(), user_id: "1".into(), username: Some("e".into()) };
+        save_to(&path, &s).unwrap();
+        assert_eq!(load_from(&path), Some(s));
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
