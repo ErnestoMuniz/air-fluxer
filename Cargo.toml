@@ -11,3 +11,9 @@ license = "AGPL-3.0-only"
 # but build every dependency, Rune included, with optimizations even in debug builds.
 [profile.dev.package."*"]
 opt-level = 3
+
+# The release binary carries all of libwebrtc: link-time optimization drops what is unused, and the
+# symbols are not needed to run. (No panic = "abort": Rune catches panics in image codecs.)
+[profile.release]
+lto = "thin"
+strip = "symbols"
