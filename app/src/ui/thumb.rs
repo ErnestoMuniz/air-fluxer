@@ -9,7 +9,10 @@
 use rune::{Color, Drag, El, Live, Phase, PointerEvent, ScrollPos, Spring, col, el, oklcha};
 use std::cell::Cell;
 use std::rc::Rc;
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use std::time::{Duration, Instant};
 
 /// The strip along the right edge that takes presses; the thumb sits inside it.
 const STRIP: f32 = 16.0;
@@ -20,17 +23,62 @@ const INSET: f32 = 8.0;
 /// list runs on behind the box, but the thumb stays clear of it.
 const BOTTOM: f32 = super::compose::BOX_H + super::compose::PAD_Y + 6.0;
 const MIN_LEN: f32 = 32.0;
-/// Thumb widths: faded out and about to vanish, while it shows, and with the pointer near or holding it.
+/// Thumb widths: about to vanish, while it shows, and with the pointer near or holding it.
 const W_REST: f32 = 1.5;
 const W_SHOWN: f32 = 7.0;
 const W_NEAR: f32 = 10.0;
 /// How near the right edge the pointer reveals and widens it.
 const NEAR: f32 = 32.0;
 /// How long it stays up after the last scroll or pointer move, before it narrows and fades.
-const HOLD: Duration = Duration::from_millis(1100);
+pub const HOLD: Duration = Duration::from_millis(1100);
+#[cfg(test)]
+pub const WIDTHS: (f32, f32, f32) = (W_REST, W_SHOWN, W_NEAR);
 
 const SHOWN: fn() -> Color = || oklcha(1.0, 0.0, 0.0, 0.30);
 const HELD: fn() -> Color = || oklcha(1.0, 0.0, 0.0, 0.55);
+
+/// What the hiding thread shares with the thumb: the live values it sets when the hold runs out
+/// (`Live` is thread-safe), whether the pointer holds the thumb, whether it is up, and how long
+/// it is. A rect's `Live::pulse` would not do: a rect bound to a live value lands on the pulse's
+/// resting rect, never its active one.
+#[derive(Clone)]
+struct Fade {
+    pill: Live<[f32; 4]>,
+    opacity: Live<f32>,
+    held: Arc<AtomicBool>,
+    up: Arc<AtomicBool>,
+    len: Arc<AtomicU32>,
+}
+
+impl Fade {
+    fn rest_rect(&self) -> [f32; 4] { [STRIP - EDGE - W_REST, 0.0, W_REST, f32::from_bits(self.len.load(Ordering::Relaxed))] }
+
+    /// Narrows and fades it out together (the springs ease both).
+    fn hide(&self) {
+        self.up.store(false, Ordering::Relaxed);
+        self.pill.set(self.rest_rect());
+        self.opacity.set(0.0);
+    }
+}
+
+/// Waits for the hold to run out, as renewed by each activity, then hides unless the thumb is held.
+fn hide_later(rx: Receiver<Instant>, fade: Fade) {
+    let mut due: Option<Instant> = None;
+    loop {
+        let next = match due {
+            Some(t) => rx.recv_timeout(t.saturating_duration_since(Instant::now())),
+            None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+        };
+        match next {
+            Ok(t) => due = Some(t),
+            Err(RecvTimeoutError::Timeout) => {
+                if !fade.held.load(Ordering::Relaxed) { fade.hide() }
+                due = None;
+            }
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
 
 struct Inner {
     pos: Cell<ScrollPos>,
@@ -40,15 +88,15 @@ struct Inner {
     dragging: Cell<bool>,
     /// Shown at once and kept so, for `--scene scroll`.
     pinned: Cell<bool>,
-    /// On the animation clock, when the current show ends, and when it was last renewed.
-    until: Cell<f64>,
-    renewed: Cell<f64>,
+    /// When the hold was last renewed.
+    renewed: Cell<Instant>,
+    /// Asks the hiding thread to hide the thumb at an instant (later renewals replace it).
+    timer: Sender<Instant>,
+    fade: Fade,
     /// Where the strip is in the area, the thumb's place and length in the strip (never eased, so
     /// a drag keeps up with the pointer), the pill in that place (eased in width), and how it looks.
     track: Live<[f32; 4]>,
     slot: Live<[f32; 4]>,
-    pill: Live<[f32; 4]>,
-    opacity: Live<f32>,
     fill: Live<Color>,
 }
 
@@ -58,17 +106,26 @@ pub struct Thumb(Rc<Inner>);
 
 impl Default for Thumb {
     fn default() -> Self {
+        let (timer, rx) = channel();
+        let fade = Fade {
+            pill: Live::new([0.0; 4]),
+            opacity: Live::new(0.0),
+            held: Arc::new(AtomicBool::new(false)),
+            up: Arc::new(AtomicBool::new(false)),
+            len: Arc::new(AtomicU32::new(0f32.to_bits())),
+        };
+        let worker = fade.clone();
+        std::thread::Builder::new().name("fluxer-thumb".into()).spawn(move || hide_later(rx, worker)).ok();
         Thumb(Rc::new(Inner {
             pos: Cell::new(ScrollPos::default()),
             near: Cell::new(false),
             dragging: Cell::new(false),
             pinned: Cell::new(false),
-            until: Cell::new(0.0),
-            renewed: Cell::new(f64::NEG_INFINITY),
+            renewed: Cell::new(Instant::now() - Duration::from_secs(10)),
+            timer,
+            fade,
             track: Live::new([0.0; 4]),
             slot: Live::new([0.0; 4]),
-            pill: Live::new([0.0; 4]),
-            opacity: Live::new(0.0),
             fill: Live::new(SHOWN()),
         }))
     }
@@ -107,74 +164,82 @@ impl Inner {
 
     fn held(&self) -> bool { self.near.get() || self.dragging.get() }
 
+    fn set_held(&self) { self.fade.held.store(self.held(), Ordering::Relaxed) }
+
     /// Up and wide while the pointer is near or holds it; it stays so until both let go.
     fn hold_wide(&self) {
-        self.until.set(f64::INFINITY);
+        self.set_held();
+        self.fade.up.store(true, Ordering::Relaxed);
         if self.pinned.get() {
-            self.pill.snap(self.pill_rect(W_NEAR));
-            self.opacity.snap(1.0);
+            self.fade.pill.snap(self.pill_rect(W_NEAR));
+            self.fade.opacity.snap(1.0);
             self.fill.snap(HELD());
             return;
         }
-        self.pill.set(self.pill_rect(W_NEAR));
-        self.opacity.set(1.0);
+        self.fade.pill.set(self.pill_rect(W_NEAR));
+        self.fade.opacity.set(1.0);
         self.fill.set(HELD());
     }
 
-    /// Shows the thumb now and lets it narrow and fade after [`HOLD`]; `now` is the animation clock.
-    fn pulse(&self, now: f64, hold: Duration) {
-        self.until.set(now + hold.as_secs_f64());
-        self.renewed.set(now);
+    /// Shows the thumb at its middle width and lets it narrow and fade after [`HOLD`] without activity.
+    fn show(&self) {
+        self.renewed.set(Instant::now());
+        self.fade.up.store(true, Ordering::Relaxed);
         self.fill.set(SHOWN());
-        self.pill.pulse(self.pill_rect(W_SHOWN), self.pill_rect(W_REST), hold);
-        self.opacity.pulse(1.0, 0.0, hold);
+        self.fade.pill.set(self.pill_rect(W_SHOWN));
+        self.fade.opacity.set(1.0);
+        let _ = self.timer.send(Instant::now() + HOLD);
     }
 
-    /// Activity at `now`, renewed at most every quarter second so a moving pointer is cheap.
-    fn activity(&self, now: f64) {
-        if self.shows() && !self.held() && now >= self.renewed.get() + 0.25 { self.pulse(now, HOLD) }
+    /// Activity, renewed at most every quarter second so a moving pointer is cheap.
+    fn activity(&self) {
+        if self.shows() && !self.held() && self.renewed.get().elapsed() >= Duration::from_millis(250) { self.show() }
     }
 
     /// The viewport scrolled, resized or its content changed: follow it. `scrolled` says a hand did it.
     fn follow(&self, mut at: ScrollPos) {
         at.viewport = at.drawn;
         self.pos.set(at);
-        let (scrolled, instant, now) = rune::scroll_watch_state();
+        let (scrolled, instant, _) = rune::scroll_watch_state();
         let (len, shows) = track_len(at);
         self.track.set(if shows { [at.viewport[0] - STRIP, INSET, STRIP, len] } else { [0.0; 4] });
         if !shows {
             self.slot.snap([0.0; 4]);
-            self.opacity.snap(0.0);
+            self.fade.opacity.snap(0.0);
+            self.fade.up.store(false, Ordering::Relaxed);
             return;
         }
         let (top, h) = thumb_of(at, len);
         self.slot.snap([0.0, top, STRIP, h]);
+        self.fade.len.store(h.to_bits(), Ordering::Relaxed);
         if self.held() {
             self.hold_wide();
         } else if scrolled && !instant {
-            self.pulse(now, HOLD);
-        } else if now < self.until.get() {
-            // Shown and the content moved under it (a picture loaded, a message came): keep to it for what is left of the hold.
-            self.pulse(now, Duration::from_secs_f64(self.until.get() - now));
-        } else {
-            self.pill.snap(self.pill_rect(W_REST));
+            self.show();
+        } else if self.fade.up.load(Ordering::Relaxed) {
+            // Up and the content moved under it (a picture loaded, a message came): keep its length true.
+            self.fade.pill.set(self.pill_rect(W_SHOWN));
         }
     }
 
     /// The pointer moved in the area: near the right edge it holds the thumb up and wide, elsewhere it just shows it.
-    fn moved(&self, p: PointerEvent, now: f64) {
+    fn moved(&self, p: PointerEvent) {
         let at = self.pos.get();
         let near = self.shows() && p.x >= at.viewport[0] - NEAR;
         if self.near.replace(near) != near {
-            if near { self.hold_wide() } else if !self.dragging.get() { self.pulse(now, HOLD) }
+            self.set_held();
+            if near { self.hold_wide() } else if !self.dragging.get() { self.show() }
         } else if !near {
-            self.activity(now);
+            self.activity();
         }
     }
 
     /// The pointer left the area.
-    fn left(&self, now: f64) {
-        if self.near.replace(false) && !self.dragging.get() && self.shows() { self.pulse(now, HOLD) }
+    fn left(&self) {
+        if self.near.replace(false) {
+            self.set_held();
+            if !self.dragging.get() && self.shows() { self.show() }
+        }
     }
 
     fn drag(&self, target: &str, d: &mut Drag, tx: &mut rune::Tx) {
@@ -192,7 +257,8 @@ impl Inner {
             }
             Phase::Up => {
                 self.dragging.set(false);
-                if !self.near.get() { self.pulse(tx.clock(), HOLD) }
+                self.set_held();
+                if !self.near.get() { self.show() }
                 return;
             }
             Phase::Move => {}
@@ -202,8 +268,12 @@ impl Inner {
 }
 
 impl Thumb {
+    /// How wide the thumb is being drawn and how opaque (the values the view is bound to).
+    #[cfg(test)]
+    pub fn look(&self) -> (f32, f32) { (self.0.fade.pill.get()[2], self.0.fade.opacity.get()) }
+
     /// Shows the thumb as if the pointer were near it, for looking at it without a mouse (`--scene scroll`).
-    pub fn pin(&self) { self.0.near.set(true); self.0.pinned.set(true) }
+    pub fn pin(&self) { self.0.near.set(true); self.0.pinned.set(true); self.0.set_held() }
 }
 
 /// `viewport` (a vertical scroll viewport keyed `viewport_key`, sized as it should be: it fills the
@@ -213,16 +283,16 @@ pub fn attach(thumb: &Thumb, area_key: &str, viewport_key: &str, viewport: El) -
     let (watch, moved, left, drag) = (thumb.0.clone(), thumb.0.clone(), thumb.0.clone(), thumb.0.clone());
     let live = &thumb.0;
     col().key(area_key.to_string()).grow(1.0).min_h(0.0)
-        .on_pointer_move_any(move |p, tx| { tx.live_only(); moved.moved(p, tx.clock()) })
-        .on_hover_change_any(move |inside, tx| { tx.live_only(); if !inside { left.left(tx.clock()) } })
+        .on_pointer_move_any(move |p, tx| { tx.live_only(); moved.moved(p) })
+        .on_hover_change_any(move |inside, tx| { tx.live_only(); if !inside { left.left() } })
         .child(viewport.key(viewport_key.to_string()).chain_scroll_offset(move |at| watch.follow(at)))
         .child(el().key("msg-scroll-track").absolute(0.0, 0.0).live_rect(&live.track)
-            .live_opacity(live.opacity.smooth(Spring::new(0.14, 0.0)).rest(Spring::new(0.35, 0.0)))
+            .live_opacity(live.fade.opacity.smooth(Spring::new(0.16, 0.0)).rest(Spring::new(0.4, 0.0)))
             .on_drag_any(move |d, tx| drag.drag(&target, d, tx))
             .a11y_hidden()
             .child(el().key("msg-scroll-slot").absolute(0.0, 0.0).live_rect(&live.slot)
                 .child(el().key("msg-scroll-thumb").absolute(0.0, 0.0)
-                    .live_rect(live.pill.smooth(Spring::new(0.16, 0.0)).rest(Spring::new(0.35, 0.0)))
+                    .live_rect(live.fade.pill.smooth(Spring::new(0.3, 0.0)))
                     .radius(W_NEAR / 2.0)
                     .live_fill(live.fill.smooth(Spring::new(0.15, 0.0))))))
 }

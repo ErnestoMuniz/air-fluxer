@@ -1136,6 +1136,29 @@ mod tests {
     }
 
     #[test]
+    fn the_scroll_thumb_is_mid_width_while_scrolling_wide_near_the_edge_and_gone_after_the_hold() {
+        let (rest, shown, near) = ui::thumb::WIDTHS;
+        let mut rt = rt();
+        for _ in 0..5 { rt.frame(1.0 / 60.0); }
+        assert_eq!(rt.state.thumb.look(), (0.0, 0.0), "nothing shows before anything happens");
+        // The wheel over the middle of the list: shown at its middle width.
+        rt.wheel(500.0, 300.0, 120.0);
+        for _ in 0..5 { rt.frame(1.0 / 60.0); }
+        assert_eq!(rt.state.thumb.look(), (shown, 1.0), "scrolling shows the thumb at its middle width");
+        // The pointer near the right edge: wide.
+        let (x, y) = rt.find("msg-scroll-track").unwrap();
+        rt.pointer_move(x, y);
+        for _ in 0..3 { rt.frame(1.0 / 60.0); }
+        assert_eq!(rt.state.thumb.look(), (near, 1.0), "near the edge it is wide");
+        // Away from it, and then nothing for longer than the hold: narrow and gone.
+        rt.pointer_move(500.0, 300.0);
+        for _ in 0..3 { rt.frame(1.0 / 60.0); }
+        assert_eq!(rt.state.thumb.look().0, shown, "leaving the edge brings it back to its middle width");
+        std::thread::sleep(ui::thumb::HOLD + std::time::Duration::from_millis(400));
+        assert_eq!(rt.state.thumb.look(), (rest, 0.0), "left alone it narrows and fades out");
+    }
+
+    #[test]
     fn json_helpers() {
         assert_eq!(str_at(&json!({"a": {"b": "c"}}), &["a", "b"]), Some("c"));
     }
