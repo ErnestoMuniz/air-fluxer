@@ -8,12 +8,22 @@ use rune::{Image, ImageCache, Waker};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Largest media download we accept.
 const MAX_MEDIA_BYTES: u64 = 12 * 1024 * 1024;
 /// Largest file we upload (the server may allow less).
 const MAX_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
 const MAX_IN_FLIGHT_IMAGES: usize = 24;
+/// An animation decodes every frame, so a small file can take tens of megabytes of RAM: one that
+/// would take more than this decoded is not decoded at all, and its still picture stands in.
+pub const MAX_ANIMATION_BYTES: usize = 64 << 20;
+/// Decoded pictures nothing asks for any more are kept (so going back is instant) up to this much.
+const COLD_BUDGET: usize = 64 << 20;
+/// An animation nothing asks for any more (scrolled away, window unfocused) is let go after this.
+const ANIMATION_GRACE: Duration = Duration::from_secs(15);
+/// The media cache on disk is cut down to this at launch, oldest files first.
+const DISK_CACHE_BYTES: u64 = 256 << 20;
 
 /// A media type from the file extension; anything unknown is sent as plain bytes.
 pub fn content_type_of(name: &str) -> &'static str {
@@ -26,13 +36,35 @@ pub fn content_type_of(name: &str) -> &'static str {
     }
 }
 
-/// Downloaded pictures are kept on disk so the next launch shows them at once.
-fn cache_path(url: &str) -> Option<std::path::PathBuf> {
+fn cache_dir() -> Option<std::path::PathBuf> {
     let base = std::env::var_os("FLUXER_RUX_CACHE_DIR").map(std::path::PathBuf::from).or_else(|| std::env::var_os("XDG_CACHE_HOME").map(std::path::PathBuf::from))
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))?;
+    Some(base.join("fluxer-rune").join("media"))
+}
+
+/// Downloaded pictures are kept on disk so the next launch shows them at once.
+fn cache_path(url: &str) -> Option<std::path::PathBuf> {
     // FNV-1a: stable across runs, unlike the std hasher's guarantees.
     let h = url.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
-    Some(base.join("fluxer-rune").join("media").join(format!("{h:016x}")))
+    Some(cache_dir()?.join(format!("{h:016x}")))
+}
+
+/// Deletes the oldest cached pictures until the folder fits in `max` bytes (and any half-written
+/// leftovers). Runs on its own thread at launch; nothing here touches the UI thread.
+fn prune_cache(max: u64) {
+    let Some(dir) = cache_dir() else { return };
+    let Ok(read) = std::fs::read_dir(&dir) else { return };
+    let mut files: Vec<(std::time::SystemTime, u64, std::path::PathBuf)> = read.flatten().filter_map(|e| {
+        let m = e.metadata().ok()?;
+        m.is_file().then(|| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len(), e.path()))
+    }).collect();
+    let mut total: u64 = files.iter().map(|f| f.1).sum();
+    files.sort_by_key(|f| f.0);
+    for (_, len, path) in files {
+        let partial = path.extension().is_some_and(|e| e == "part");
+        if total <= max && !partial { continue }
+        if std::fs::remove_file(&path).is_ok() { total = total.saturating_sub(len) }
+    }
 }
 
 fn fetch_cached(url: &str) -> Result<Vec<u8>, String> {
@@ -52,13 +84,30 @@ pub fn profile_key(user: &str, guild: Option<&str>) -> String { format!("{user}@
 pub enum Done {
     History { channel: String, res: Result<Vec<Message>, String> },
     Sent { channel: String, local: String, res: Result<Message, String> },
-    Image { url: String, res: Result<Vec<u8>, String> },
+    /// A downloaded picture; the number is what it takes decoded when it is an animation, else 0.
+    Image { url: String, res: Result<(Vec<u8>, usize), String> },
     Endpoints(Result<Endpoints, String>),
     Reacted(Result<(), String>),
     ProfileSaved { guild: Option<String>, res: Result<serde_json::Value, String> },
     Profile { key: String, res: Result<api::Profile, String> },
     /// A message sent without a local copy (a sticker): the gateway brings it back; only failures matter.
     Posted(Result<(), String>),
+}
+
+/// A decoded picture the UI can draw, and what the app needs to decide when to let it go.
+struct Entry {
+    img: Image,
+    /// Decoded size when it is an animation (known from its headers), else 0.
+    animation: usize,
+    /// Since when nothing on screen or about to be asks for it.
+    cold_since: Option<Instant>,
+}
+
+impl Entry {
+    /// Decoded size in memory: the mips of a still, or every frame of an animation.
+    fn bytes(&self) -> usize {
+        if self.animation > 0 { self.animation } else { self.img.size().map_or(0, |[w, h]| w as usize * h as usize * 16 / 3) }
+    }
 }
 
 pub struct Net {
@@ -68,8 +117,9 @@ pub struct Net {
     wake: Option<Waker>,
     cache: Option<ImageCache>,
     logo: Option<Image>,
-    ready: HashMap<String, Image>,
+    ready: HashMap<String, Entry>,
     requested: HashSet<String>,
+    last_trim: Instant,
     queue: VecDeque<String>,
     in_flight: usize,
 }
@@ -77,7 +127,7 @@ pub struct Net {
 impl Default for Net {
     fn default() -> Self {
         let (tx, rx) = channel();
-        Net { api: None, tx, rx, wake: None, cache: None, logo: None, ready: HashMap::new(), requested: HashSet::new(), queue: VecDeque::new(), in_flight: 0 }
+        Net { api: None, tx, rx, wake: None, cache: None, logo: None, ready: HashMap::new(), requested: HashSet::new(), last_trim: Instant::now(), queue: VecDeque::new(), in_flight: 0 }
     }
 }
 
@@ -87,6 +137,7 @@ impl Net {
         self.logo = Some(cache.svg(&include_bytes!("../assets/logo.svg")[..], 128.0, 2.0));
         self.cache = Some(cache);
         self.wake = Some(wake);
+        std::thread::Builder::new().name("fluxer-prune".into()).spawn(|| prune_cache(DISK_CACHE_BYTES)).ok();
     }
 
     pub fn set_api(&mut self, api: Option<Arc<Api>>) { self.api = api }
@@ -192,13 +243,51 @@ impl Net {
             let Some(url) = self.queue.pop_front() else { return };
             self.in_flight += 1;
             let u = url.clone();
-            self.job(move || fetch_cached(&u), move |res| Done::Image { url, res });
+            self.job(move || fetch_cached(&u).and_then(|bytes| match crate::animsize::decoded_bytes(&bytes) {
+                Some(n) if n > MAX_ANIMATION_BYTES => Err(format!("animation too large ({} MB decoded)", n >> 20)),
+                n => Ok((bytes, n.unwrap_or(0))),
+            }), move |res| Done::Image { url, res });
         }
     }
 
     pub fn logo(&self) -> Option<&Image> { self.logo.as_ref() }
 
-    pub fn image(&self, url: &str) -> Option<&Image> { self.ready.get(url) }
+    pub fn image(&self, url: &str) -> Option<&Image> { self.ready.get(url).map(|e| &e.img) }
+
+    /// Decoded memory held by pictures that are loaded (animations at their full decoded size).
+    pub fn held_bytes(&self) -> usize { self.ready.values().map(Entry::bytes).sum() }
+
+    /// Lets go of pictures the screen no longer needs. `keep` is everything wanted now. Animations
+    /// (the big ones) go once cold for a few seconds; stills stay while the cold ones fit in a
+    /// budget, oldest first. What is let go is asked for again, from the disk cache, if it is
+    /// wanted later; what is still drawn stays alive in the tree that draws it.
+    pub fn trim(&mut self, keep: &HashSet<String>) {
+        let now = Instant::now();
+        self.last_trim = now;
+        for (url, e) in self.ready.iter_mut() {
+            if keep.contains(url) { e.cold_since = None } else if e.cold_since.is_none() { e.cold_since = Some(now) }
+        }
+        let mut gone: Vec<String> = self.ready.iter()
+            .filter(|(_, e)| e.animation > 0 && e.cold_since.is_some_and(|t| now.duration_since(t) >= ANIMATION_GRACE))
+            .map(|(u, _)| u.clone()).collect();
+        let mut cold: Vec<(Instant, &String, usize)> = self.ready.iter()
+            .filter(|(u, _)| !gone.contains(u))
+            .filter_map(|(u, e)| Some((e.cold_since?, u, e.bytes()))).collect();
+        let mut total: usize = cold.iter().map(|c| c.2).sum();
+        cold.sort_by_key(|c| c.0);
+        for (_, url, bytes) in cold {
+            if total <= COLD_BUDGET { break }
+            total -= bytes;
+            gone.push(url.clone());
+        }
+        for url in gone {
+            self.ready.remove(&url);
+            self.requested.remove(&url);
+        }
+    }
+
+    /// True when `trim` has not run for a second.
+    pub fn trim_due(&self) -> bool { self.last_trim.elapsed() >= Duration::from_secs(1) }
 
     /// Drains finished jobs. Images are handled here; the rest is returned for the app to apply.
     pub fn drain(&mut self) -> Vec<Done> {
@@ -207,8 +296,8 @@ impl Net {
             match d {
                 Done::Image { url, res } => {
                     self.in_flight = self.in_flight.saturating_sub(1);
-                    if let (Ok(bytes), Some(cache)) = (res, &self.cache) {
-                        self.ready.insert(url, cache.load(bytes));
+                    if let (Ok((bytes, animation)), Some(cache)) = (res, &self.cache) {
+                        self.ready.insert(url, Entry { img: cache.load(bytes), animation, cold_since: None });
                     }
                     self.pump_images();
                 }

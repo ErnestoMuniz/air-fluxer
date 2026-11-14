@@ -62,6 +62,20 @@ pub fn needs_markdown(s: &str) -> bool {
     s.contains(['*', '_', '~', '`', '>', '#', '[', ']', '|', '\n', '<']) || s.contains("http") || s.starts_with("- ") || s.starts_with("1.")
 }
 
+/// The ids of the people a body mentions (`<@id>` and `<@!id>`), in order of appearance.
+pub fn mentioned_ids(body: &str) -> Vec<&str> {
+    let mut ids = Vec::new();
+    let mut rest = body;
+    while let Some(i) = rest.find("<@") {
+        let tail = &rest[i + 2..];
+        let tail = tail.strip_prefix('!').unwrap_or(tail);
+        let digits = tail.bytes().take_while(u8::is_ascii_digit).count();
+        if digits > 0 && tail[digits..].starts_with('>') { ids.push(&tail[..digits]) }
+        rest = &rest[i + 2..];
+    }
+    ids
+}
+
 /// The Markdown source to render for a message body.
 pub fn prepare<'a>(body: &'a str, mentions: &[(String, String)]) -> Cow<'a, str> {
     if !body.contains('<') && !body.contains('\n') { return Cow::Borrowed(body) }
@@ -103,6 +117,12 @@ mod tests {
         assert!(needs_markdown("isso é **forte**"));
         assert!(needs_markdown("veja https://exemplo.com"));
         assert!(needs_markdown("duas\nlinhas"));
+    }
+
+    #[test]
+    fn mentioned_ids_are_found_in_order_and_roles_and_channels_are_not_people() {
+        assert_eq!(mentioned_ids("oi <@12> e <@!34>, <@&7> <#9> <@x> <@5"), vec!["12", "34"]);
+        assert!(mentioned_ids("sem menções").is_empty());
     }
 
     #[test]

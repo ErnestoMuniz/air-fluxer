@@ -67,7 +67,7 @@ impl Roster {
                 }
             }
         }
-        for p in d.get("presences").and_then(Value::as_array).into_iter().flatten() { self.on_presence(p) }
+        for p in d.get("presences").and_then(Value::as_array).into_iter().flatten() { self.on_presence(p); }
     }
 
     /// Remembers a person's roles in a server from a JSON array of ids.
@@ -121,9 +121,13 @@ impl Roster {
             .or_else(|| self.role_style.get(guild).map(|r| r.0).filter(|c| *c != 0))
     }
 
-    pub fn on_presence(&mut self, d: &Value) {
+    /// Records a status; true when it is a change (the same status again redraws nothing).
+    pub fn on_presence(&mut self, d: &Value) -> bool {
         let id = d.pointer("/user/id").and_then(Value::as_str);
-        if let (Some(id), Some(st)) = (id, d.get("status").and_then(Value::as_str)) { self.status.insert(id.into(), st.into()); }
+        let (Some(id), Some(st)) = (id, d.get("status").and_then(Value::as_str)) else { return false };
+        if self.status.get(id).is_some_and(|old| old == st) { return false }
+        self.status.insert(id.into(), st.into());
+        true
     }
 
     /// `GUILD_MEMBER_LIST_UPDATE`: the only operation the server sends is a SYNC of a range.

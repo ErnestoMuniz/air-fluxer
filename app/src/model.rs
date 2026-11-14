@@ -460,34 +460,47 @@ impl Chat {
     }
 
     /// Every image the screen can show right now: guild icons, DM avatars, and avatars plus image
-    /// attachments of the last `recent` messages of the open channel.
-    pub fn wanted_images(&self, recent: usize, stills: bool) -> Vec<String> {
+    /// attachments of the last `recent` messages of the open channel. GIFs are asked for as still
+    /// pictures (small); their animated versions, which decode every frame, only for the messages
+    /// whose index is in `animate`, a little beyond the edges of what is on screen, and for the
+    /// server banner. `None` (the window is not focused) asks for no animation at all. `stickers`
+    /// adds the open server's stickers, which are only needed while their tab is open.
+    pub fn wanted_images(&self, recent: usize, animate: Option<std::ops::Range<usize>>, stickers: bool) -> Vec<String> {
         let Some(media) = self.media.as_deref() else { return vec![] };
         let mut urls: Vec<String> = self.guilds.iter()
             .filter_map(|g| g.icon.as_deref().map(|h| fluxer_client::api::guild_icon_url(media, &g.id, h, 128))).collect();
         if let Some(g) = self.nav.guild.and_then(|g| self.guilds.get(g)) {
-            urls.extend(g.banner.as_deref().map(|h| fluxer_client::api::banner_url(media, &g.id, h, BANNER_SIZE)));
-            if stills { urls.extend(g.banner.as_deref().map(|h| fluxer_client::api::banner_still_url(media, &g.id, h, BANNER_SIZE))) }
+            if let Some(h) = g.banner.as_deref() {
+                // The still is always asked for: it shows first, and stands in when the animation is too big.
+                urls.push(fluxer_client::api::banner_still_url(media, &g.id, h, BANNER_SIZE));
+                if animate.is_some() { urls.push(fluxer_client::api::banner_url(media, &g.id, h, BANNER_SIZE)) }
+            }
         }
         for people in self.voice.values() {
             urls.extend(people.iter().filter_map(|p| fluxer_client::api::avatar_url(media, self.roster.users.get(&p.user_id)?, 128)));
         }
         urls.extend(self.roster.role_icon.iter().filter_map(|(id, (h, _))| h.as_deref().map(|h| fluxer_client::api::role_icon_url(media, id, h, 64))));
-        if let Some(g) = self.nav.guild.and_then(|g| self.guilds.get(g)) { urls.extend(g.stickers.iter().map(|(id, _)| sticker_url(media, id))) }
+        if stickers && let Some(g) = self.nav.guild.and_then(|g| self.guilds.get(g)) { urls.extend(g.stickers.iter().map(|(id, _)| sticker_url(media, id))) }
         urls.extend(self.dms.iter().filter_map(|c| fluxer_client::api::avatar_url(media, c.peer.as_ref()?, 128)));
         if let Some(rows) = self.nav.guild.and_then(|g| self.guilds.get(g)).and_then(|g| self.roster.lists.get(&g.id)) {
             urls.extend(rows.iter().filter_map(|r| match r { crate::roster::Row::Member { user, .. } => fluxer_client::api::avatar_url(media, user, 128), _ => None }));
         }
         if let Some(log) = self.log() {
-            for m in log.msgs.iter().rev().take(recent) {
+            const MARGIN: usize = 3;
+            let first = log.msgs.len().saturating_sub(recent);
+            for (i, m) in log.msgs.iter().enumerate().skip(first) {
+                let moving = animate.as_ref().is_some_and(|r| i + MARGIN >= r.start && i < r.end + MARGIN);
                 urls.extend(fluxer_client::api::avatar_url(media, &m.author, 128));
                 urls.extend(m.reply.iter().filter_map(|r| fluxer_client::api::avatar_url(media, &r.author, 128)));
-                urls.extend(m.embeds.iter().filter_map(|e| Some(embed_image_url(e.image.as_deref()?, e.gif))));
-                urls.extend(m.attachments.iter().filter(|a| a.is_image() || a.is_gif()).filter_map(|a| Some(attachment_fetch_url(a.url.as_deref()?, a.is_gif()))));
-                // While the window is not focused the GIFs stand still: their first frames are fetched for that.
-                if stills {
-                    urls.extend(m.attachments.iter().filter(|a| a.is_gif()).filter_map(|a| Some(attachment_fetch_url(a.url.as_deref()?, false))));
-                    urls.extend(m.embeds.iter().filter(|e| e.gif).filter_map(|e| Some(embed_image_url(e.image.as_deref()?, false))));
+                for e in m.embeds.iter().filter(|e| e.image.is_some()) {
+                    let Some(u) = e.image.as_deref() else { continue };
+                    urls.push(embed_image_url(u, false));
+                    if e.gif && moving { urls.push(embed_image_url(u, true)) }
+                }
+                for a in m.attachments.iter().filter(|a| a.is_image() || a.is_gif()) {
+                    let Some(u) = a.url.as_deref() else { continue };
+                    urls.push(attachment_fetch_url(u, false));
+                    if a.is_gif() && moving { urls.push(attachment_fetch_url(u, true)) }
                 }
             }
         }
@@ -555,19 +568,26 @@ mod tests {
     }
 
     #[test]
-    fn stills_are_only_asked_for_while_unfocused() {
+    fn animations_are_only_asked_for_near_the_screen_while_focused() {
         let mut c = Chat { media: Some("https://m".into()), ..Chat::default() };
         c.apply_ready(&ready());
-        let mut gif = Message::plain("m1", "c1", "", User { id: "9".into(), username: "x".into(), global_name: None, avatar: None, discriminator: None });
-        gif.attachments.push(fluxer_client::api::Attachment { id: "a".into(), filename: "x.gif".into(), content_type: Some("image/gif".into()),
-            url: Some("https://m/x.gif".into()), width: Some(10), height: Some(10), size: 1 });
-        c.on_history("c1", vec![gif]);
+        let mk = |id: &str| {
+            let mut m = Message::plain(id, "c1", "", User { id: "9".into(), username: "x".into(), global_name: None, avatar: None, discriminator: None });
+            m.attachments.push(fluxer_client::api::Attachment { id: id.into(), filename: "x.gif".into(), content_type: Some("image/gif".into()),
+                url: Some(format!("https://m/{id}.gif")), width: Some(10), height: Some(10), size: 1 });
+            m
+        };
+        c.on_history("c1", (10..30).map(|i| mk(&i.to_string())).collect());
         c.nav = Nav { guild: Some(0), channel: 0 };
-        let focused = c.wanted_images(80, false);
-        let blurred = c.wanted_images(80, true);
-        assert!(focused.iter().any(|u| u.contains("animated=true")));
-        assert!(!focused.iter().any(|u| u.contains("format=png")), "no still while focused");
-        assert!(blurred.iter().any(|u| u.contains("x.gif") && u.contains("format=png")), "the still first frame is fetched when blurred");
+        let animated = |urls: &[String]| urls.iter().filter(|u| u.contains("animated=true")).count();
+        let stills = |urls: &[String]| urls.iter().filter(|u| u.contains("format=png")).count();
+        let near = c.wanted_images(80, Some(8..12), false);
+        assert_eq!(animated(&near), 10, "the four on screen plus three of margin each side: indexes 5..=14");
+        assert_eq!(stills(&near), 20, "every GIF has its still");
+        let blurred = c.wanted_images(80, None, false);
+        assert_eq!(animated(&blurred), 0, "an unfocused window animates nothing");
+        assert_eq!(stills(&blurred), 20);
+        assert_eq!(animated(&c.wanted_images(80, Some(0..0), false)), 3, "an empty range still covers its margin");
     }
 
     fn user(id: &str, name: &str) -> Value { json!({"id": id, "username": name, "avatar": null}) }
@@ -674,14 +694,14 @@ mod tests {
         m.attachments.push(Attachment { id: "b".into(), filename: "x.zip".into(), content_type: Some("application/zip".into()), url: Some("https://m/x.zip".into()), width: None, height: None, size: 1 });
         m.embeds.push(Embed { image: Some("https://m/e.jpg".into()), title: Some("t".into()), ..Embed::default() });
         c.on_message(m);
-        let urls = c.wanted_images(80, false);
+        let urls = c.wanted_images(80, None, false);
         assert!(urls.contains(&"https://m/e.jpg?format=png&width=480".to_string()), "embed pictures are fetched");
         assert!(urls.contains(&"https://media/icons/g1/ic.png?size=128".to_string()));
         assert!(urls.contains(&"https://media/avatars/2/av2.png?size=128".to_string()));
         assert!(urls.contains(&"https://m/f.png?format=png&width=720".to_string()));
         assert!(!urls.iter().any(|u| u.contains("x.zip")), "only images are fetched");
         c.media = None;
-        assert!(c.wanted_images(80, false).is_empty(), "without a media host there is nothing to ask");
+        assert!(c.wanted_images(80, None, false).is_empty(), "without a media host there is nothing to ask");
     }
 
     #[test]

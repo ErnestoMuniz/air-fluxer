@@ -2,6 +2,7 @@
 //! `cargo run --release -p fluxer-app` opens the window (`FLUXER_DEMO=1` for fake data);
 //! `-- --snap out.png [--scene login|code|ip]` renders it headless.
 
+mod animsize;
 mod auth;
 mod audio;
 mod call;
@@ -85,6 +86,11 @@ pub struct State {
     pub call: call::Call,
     /// The window has the focus; GIFs and the banner only move while it does.
     pub focused: bool,
+    /// Which messages of the open channel are on screen (indexes into its log): only those get
+    /// their animated pictures loaded.
+    pub visible: std::ops::Range<usize>,
+    /// A typing notice arrived and its fade-out still has to be scheduled.
+    typing_wake: bool,
 }
 
 fn demo_chat() -> Chat {
@@ -131,7 +137,7 @@ impl Default for State {
             rail_hover: None, settings_open: false, pf: Default::default(), prof: [TextEdit::new(""), TextEdit::new(""), TextEdit::new(""), TextEdit::new("")],
             picker: Default::default(), prefs: prefs::load(), plus_open: false, msg_hover: None, react_picker: None, highlighted: None, pointer: rune::Live::new([0.0, 0.0]), video: None, customize_open: false, notice: None,
             ctx: None, profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
-            intro: 0.0, intro_t0: None, chat: demo_chat(), net: net::Net::default(), draft: TextEdit::new(""), gateway: None, subscribed: None, synced_guilds: Default::default(), show_members: true, call: Default::default(), focused: true,
+            intro: 0.0, intro_t0: None, chat: demo_chat(), net: net::Net::default(), draft: TextEdit::new(""), gateway: None, subscribed: None, synced_guilds: Default::default(), show_members: true, call: Default::default(), focused: true, visible: 0..0, typing_wake: false,
         }
     }
 }
@@ -167,10 +173,8 @@ fn apply(s: &mut State, e: Event) -> bool {
             "TYPING_START" => match (str_at(&d, &["channel_id"]), str_at(&d, &["user_id"])) {
                 (Some(c), Some(u)) => {
                     s.chat.roster.on_typing(c, u, clock::now_ms());
-                    // The notice fades by itself; wake Rune once it is due.
-                    if let Some(w) = s.wake.clone() {
-                        std::thread::spawn(move || { std::thread::sleep(std::time::Duration::from_millis(roster::TYPING_TTL_MS as u64 + 250)); w() });
-                    }
+                    // The notice fades by itself; `poll` asks Rune to wake once it is due.
+                    s.typing_wake = true;
                     true
                 }
                 _ => false,
@@ -186,7 +190,7 @@ fn apply(s: &mut State, e: Event) -> bool {
                 true
             }
             "VOICE_SERVER_UPDATE" => { s.call.on_server_update(&d); true }
-            "PRESENCE_UPDATE" => { s.chat.roster.on_presence(&d); true }
+            "PRESENCE_UPDATE" => s.chat.roster.on_presence(&d),
             "GUILD_MEMBER_LIST_UPDATE" => { s.chat.roster.on_member_list(&d); true }
             "MESSAGE_ACK" => match (str_at(&d, &["channel_id"]), str_at(&d, &["message_id"])) {
                 (Some(c), Some(m)) => s.chat.on_ack(c, m),
@@ -353,8 +357,28 @@ fn reconcile(s: &mut State) {
             s.net.history(&cid, None);
         }
     }
-    for url in s.chat.wanted_images(80, !s.focused) { s.net.want_image(&url) }
+    let wanted = wanted_all(s);
+    for url in &wanted { s.net.want_image(url) }
+    if s.net.trim_due() { s.net.trim(&wanted.into_iter().collect()) }
     subscribe_members(s);
+}
+
+/// Every picture the screen shows or is about to show: the open channel's (animated ones only for
+/// the messages on screen, and only while the window is focused), the GIF picker's, and the open
+/// profile card's banner.
+fn wanted_all(s: &State) -> Vec<String> {
+    let animate = s.focused.then(|| s.visible.clone());
+    let mut urls = s.chat.wanted_images(80, animate, s.picker.open == Some(picker::Tab::Stickers));
+    urls.extend(s.picker.home_images());
+    urls.extend(s.picker.wanted_images());
+    urls.extend(s.picker.animated_images());
+    if let (Some(p), Some(media)) = (&s.profile, s.chat.media.as_deref()) {
+        let guild = s.chat.nav.guild.and_then(|g| s.chat.guilds.get(g)).map(|g| g.id.as_str());
+        if let Some(h) = s.profiles.get(&net::profile_key(&p.user.id, guild)).and_then(|i| i.banner.as_deref()) {
+            urls.push(fluxer_client::api::banner_still_url(media, &p.user.id, h, 600));
+        }
+    }
+    urls
 }
 
 /// Asks the gateway for the open server's member list (and its typing events). Read-only; resent
@@ -375,7 +399,7 @@ fn subscribe_members(s: &mut State) {
     }
 }
 
-fn poll(s: &mut State, t: f64, _tx: &mut Tx) -> bool {
+fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
     if s.intro < 1.0 {
         let t0 = *s.intro_t0.get_or_insert(t);
@@ -393,6 +417,7 @@ fn poll(s: &mut State, t: f64, _tx: &mut Tx) -> bool {
     let mut events = Vec::new();
     if let Some(g) = &s.gateway { events.extend(g.inbox.try_iter()) }
     changed |= events.into_iter().fold(false, |c, e| apply(s, e) | c);
+    if std::mem::take(&mut s.typing_wake) { tx.wake_after(std::time::Duration::from_millis(roster::TYPING_TTL_MS as u64 + 250)) }
     let images_before = s.net.busy_with_images();
     for d in s.net.drain() { changed |= on_net(s, d) }
     changed |= s.call.poll(s.gateway.as_ref());
@@ -466,6 +491,7 @@ fn remember(s: &State) {
 
 pub fn open_guild(s: &mut State, g: Option<usize>) {
     s.call.view = false;
+    s.visible = 0..0;
     s.chat.open_guild(g);
     reconcile(s);
     remember(s);
@@ -473,6 +499,7 @@ pub fn open_guild(s: &mut State, g: Option<usize>) {
 
 pub fn open_channel(s: &mut State, i: usize) {
     s.call.view = false;
+    s.visible = 0..0;
     s.chat.open_channel(i);
     reconcile(s);
     remember(s);
@@ -480,6 +507,7 @@ pub fn open_channel(s: &mut State, i: usize) {
 
 pub fn open_voice_chat(s: &mut State, i: usize) {
     s.call.view = false;
+    s.visible = 0..0;
     s.chat.open_voice_chat(i);
     reconcile(s);
 }
@@ -567,7 +595,7 @@ pub fn picker_images(s: &mut State) {
     for url in s.picker.wanted_images() { s.net.want_image_first(&url) }
     // The moving versions follow once the still ones are on their way.
     for url in s.picker.animated_images() { s.net.want_image(&url) }
-    for url in s.chat.wanted_images(0, false) { s.net.want_image(&url) }
+    for url in s.chat.wanted_images(0, None, s.picker.open == Some(picker::Tab::Stickers)) { s.net.want_image(&url) }
 }
 
 /// A connected call in the demo server: two people, one sharing a screen, and the mosaic open.

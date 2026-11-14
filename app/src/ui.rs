@@ -689,7 +689,9 @@ const GIF_MAX: f32 = 300.0;
 
 /// The animated picture, or, while the window is not focused, its still first frame (once loaded).
 fn playing<'a>(s: &'a State, animated: &str, still: &str) -> Option<&'a rune::Image> {
-    if s.focused { s.net.image(animated) } else { s.net.image(still).or_else(|| s.net.image(animated)) }
+    // The still is the way in (it is small and arrives first) and the stand-in for an animation that is
+    // too big to decode or has not been asked for; the animation shows once loaded, while focused.
+    if s.focused { s.net.image(animated).or_else(|| s.net.image(still)) } else { s.net.image(still).or_else(|| s.net.image(animated)) }
 }
 
 /// An animated picture with the "GIF" tag in its corner; the grey box stands in until it arrives.
@@ -882,7 +884,9 @@ fn reply_bar(s: &State, m: &Msg) -> Option<El> {
         .shape(rune::Shape::new().stroke(vec![[26.0, 11.0], [16.0, 11.0], [11.0, 11.0], [7.0, 13.0], [5.0, 17.0], [5.0, 22.0]], 1.5, p.line));
     let inner = match &m.reply {
         Some(r) => {
-            let names: Vec<(String, String)> = s.chat.roster.users.values().map(|u| (u.id.clone(), name_in(s, u))).collect();
+            // Only the people the quote mentions need a name, not everyone the roster has ever seen.
+            let names: Vec<(String, String)> = crate::richtext::mentioned_ids(&r.content).into_iter()
+                .filter_map(|id| s.chat.roster.users.get(id)).map(|u| (u.id.clone(), name_in(s, u))).collect();
             let what = if r.content.trim().is_empty() && r.has_attachments { "Anexo".to_string() }
                 else { crate::richtext::preview(&crate::richtext::prepare(&r.content, &names).replace('*', ""), 120) };
             row().gap(6.0).center_y()
@@ -1075,7 +1079,12 @@ fn message_list(s: &State) -> El {
             })
         .virtual_rows_version((cid.clone(), first))
         // Scrolling up near the first message asks for the next page by itself.
-        .on_visible_rows(|s: &mut State, rows| { maybe_load_older(s, rows.start); false });
+        .on_visible_rows(|s: &mut State, rows| {
+            maybe_load_older(s, rows.start);
+            // The animated pictures of what is on screen are asked for now, and those that left it let go.
+            if s.visible != rows { s.visible = rows; crate::reconcile(s) }
+            false
+        });
     let mut top = col();
     if let Some(l) = s.chat.log() {
         if !l.has_more && l.loaded && n == 0 {

@@ -261,7 +261,7 @@ async fn engine(mut cmds: UnboundedReceiver<Cmd>, out: mpsc::Sender<Ev>, wake: W
     let mut watching: std::collections::HashSet<String> = Default::default();
     let mut live: Option<Live> = None;
     // The green rings come from the sound itself, checked often so they show at once.
-    let mut tick = tokio::time::interval(std::time::Duration::from_millis(15));
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(30));
     let mut shown: Vec<String> = Vec::new();
     let (mut meter, mut want_meter, mut mic_choice) = (None::<Capture>, false, None::<String>);
     loop {
