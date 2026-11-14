@@ -25,7 +25,7 @@ const BOTTOM: f32 = super::compose::BOX_H + super::compose::PAD_Y + 6.0;
 const MIN_LEN: f32 = 32.0;
 /// Thumb widths: about to vanish, while it shows, and with the pointer near or holding it.
 const W_REST: f32 = 1.5;
-const W_SHOWN: f32 = 7.0;
+const W_SHOWN: f32 = 4.0;
 const W_NEAR: f32 = 10.0;
 /// How near the right edge the pointer reveals and widens it.
 const NEAR: f32 = 32.0;
