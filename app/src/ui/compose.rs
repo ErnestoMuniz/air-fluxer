@@ -26,6 +26,10 @@ fn any_open(s: &State) -> bool { s.plus_open || s.picker.open.is_some() || s.rea
 fn close_all(s: &mut State) { s.react_picker = None; s.plus_open = false; s.customize_open = false; s.picker.close() }
 
 /// The box at the bottom of the chat.
+/// The message box's height, and the space above and below it in the strip it floats in.
+pub const BOX_H: f32 = 56.0;
+pub const PAD_Y: f32 = 8.0;
+
 pub fn composer(s: &State) -> El {
     let (p, t) = (pal(), tok::theme(true));
     let prefs = &s.prefs;
@@ -46,8 +50,8 @@ pub fn composer(s: &State) -> El {
         .child(text("GIF").font(rune::tok::TextStyle::new(10.0, 800.0)).color(tint(s.picker.open == Some(Tab::Gifs))));
     // As tall as the account bar at the bottom left, and frosted: a little translucent over the
     // chat with the blur behind it.
-    let mut bar = row().key("composer-box").h(56.0).px(8.0).gap(2.0).center_y().radius(10.0)
-        .fill(oklcha(0.32, 0.008, 265.0, 0.35)).backdrop_blur(16.0)
+    let mut bar = row().key("composer-box").h(BOX_H).px(8.0).gap(2.0).center_y().radius(10.0)
+        .fill(oklcha(0.30, 0.008, 265.0, 0.68)).backdrop_blur(6.0)
         .child(row().key("plus-btn").size(34.0, 34.0).radius(radius::SM).center().fill(if s.plus_open { p.select } else { clear() }).hover(p.select)
             .child(rune::icon(&PLUS, 22.0).color(tint(s.plus_open)))
             .cursor(rune::Cursor::Pointer)
@@ -67,7 +71,7 @@ pub fn composer(s: &State) -> El {
             .child(rune::icon(&SEND, 20.0).color(tint(!s.draft.text.trim().is_empty())))
             .cursor(rune::Cursor::Pointer).on_press(|s: &mut State| send(s)));
     }
-    col().px(16.0).py(8.0).child(super::typing_bar(s)).child(bar)
+    col().px(16.0).py(PAD_Y).child(super::typing_bar(s)).child(bar)
 }
 
 /// Popups and the layer that closes them; added at the root so they draw above everything.

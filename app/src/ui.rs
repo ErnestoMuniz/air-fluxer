@@ -1041,7 +1041,8 @@ fn message(s: &State, m: &Msg, prev: Option<&Msg>) -> El {
     let reactable = m.kind == 0 && m.delivery == Delivery::Sent;
     let over = reactable && (s.msg_hover.as_deref() == Some(m.id.as_str()) || s.react_picker.as_deref() == Some(m.id.as_str()));
     let id = m.id.clone();
-    let mut line = row().w_full().px(16.0).pt(if follow { 1.0 } else { 12.0 }).pb(if follow { 1.0 } else { 3.0 }).gap(14.0).hover(p.hover).child(lead).child(body)
+    // The same room above and below, so what is in the row sits in the middle of its hover box.
+    let mut line = row().w_full().px(16.0).py(if follow { 1.0 } else { 7.5 }).gap(14.0).hover(p.hover).child(lead).child(body)
         .on_hover_change(move |s: &mut State, inside, _| {
             if inside { s.msg_hover = Some(id.clone()) } else if s.msg_hover.as_deref() == Some(id.as_str()) { s.msg_hover = None }
         });

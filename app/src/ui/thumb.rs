@@ -13,14 +13,17 @@ use std::time::Duration;
 
 /// The strip along the right edge that takes presses; the thumb sits inside it.
 const STRIP: f32 = 16.0;
-/// The thumb's gap from the right edge, and the track's from the top and bottom.
+/// The thumb's gap from the right edge, and the track's from the top.
 const EDGE: f32 = 3.0;
 const INSET: f32 = 8.0;
+/// The track ends a little above the message box, whose top is the lowest the thumb may go: the
+/// list runs on behind the box, but the thumb stays clear of it.
+const BOTTOM: f32 = super::compose::BOX_H + super::compose::PAD_Y + 6.0;
 const MIN_LEN: f32 = 32.0;
 /// Thumb widths: faded out and about to vanish, while it shows, and with the pointer near or holding it.
 const W_REST: f32 = 1.5;
-const W_SHOWN: f32 = 5.0;
-const W_NEAR: f32 = 9.0;
+const W_SHOWN: f32 = 7.0;
+const W_NEAR: f32 = 10.0;
 /// How near the right edge the pointer reveals and widens it.
 const NEAR: f32 = 32.0;
 /// How long it stays up after the last scroll or pointer move, before it narrows and fades.
@@ -40,8 +43,10 @@ struct Inner {
     /// On the animation clock, when the current show ends, and when it was last renewed.
     until: Cell<f64>,
     renewed: Cell<f64>,
-    /// Where the strip is in the area, the thumb in the strip, and how it looks.
+    /// Where the strip is in the area, the thumb's place and length in the strip (never eased, so
+    /// a drag keeps up with the pointer), the pill in that place (eased in width), and how it looks.
     track: Live<[f32; 4]>,
+    slot: Live<[f32; 4]>,
     pill: Live<[f32; 4]>,
     opacity: Live<f32>,
     fill: Live<Color>,
@@ -61,6 +66,7 @@ impl Default for Thumb {
             until: Cell::new(0.0),
             renewed: Cell::new(f64::NEG_INFINITY),
             track: Live::new([0.0; 4]),
+            slot: Live::new([0.0; 4]),
             pill: Live::new([0.0; 4]),
             opacity: Live::new(0.0),
             fill: Live::new(SHOWN()),
@@ -70,7 +76,7 @@ impl Default for Thumb {
 
 /// The track's length and whether a thumb shows at all, for a viewport at `at`.
 fn track_len(at: ScrollPos) -> (f32, bool) {
-    let len = at.viewport[1] - 2.0 * INSET;
+    let len = at.viewport[1] - INSET - BOTTOM;
     (len, at.max[1] > 0.5 && len >= MIN_LEN)
 }
 
@@ -91,13 +97,12 @@ fn offset_for(at: ScrollPos, track: f32, top: f32) -> f32 {
 impl Inner {
     fn shows(&self) -> bool { track_len(self.pos.get()).1 }
 
-    /// The thumb `w` wide, right-aligned in its strip.
+    /// The thumb `w` wide, right-aligned in its slot, which is as long as the thumb.
     fn pill_rect(&self, w: f32) -> [f32; 4] {
         let at = self.pos.get();
         let (len, shows) = track_len(at);
         if !shows { return [0.0; 4] }
-        let (top, h) = thumb_of(at, len);
-        [STRIP - EDGE - w, top, w, h]
+        [STRIP - EDGE - w, 0.0, w, thumb_of(at, len).1]
     }
 
     fn held(&self) -> bool { self.near.get() || self.dragging.get() }
@@ -137,7 +142,13 @@ impl Inner {
         let (scrolled, instant, now) = rune::scroll_watch_state();
         let (len, shows) = track_len(at);
         self.track.set(if shows { [at.viewport[0] - STRIP, INSET, STRIP, len] } else { [0.0; 4] });
-        if !shows { self.opacity.snap(0.0); return }
+        if !shows {
+            self.slot.snap([0.0; 4]);
+            self.opacity.snap(0.0);
+            return;
+        }
+        let (top, h) = thumb_of(at, len);
+        self.slot.snap([0.0, top, STRIP, h]);
         if self.held() {
             self.hold_wide();
         } else if scrolled && !instant {
@@ -209,10 +220,11 @@ pub fn attach(thumb: &Thumb, area_key: &str, viewport_key: &str, viewport: El) -
             .live_opacity(live.opacity.smooth(Spring::new(0.14, 0.0)).rest(Spring::new(0.35, 0.0)))
             .on_drag_any(move |d, tx| drag.drag(&target, d, tx))
             .a11y_hidden()
-            .child(el().key("msg-scroll-thumb").absolute(0.0, 0.0)
-                .live_rect(live.pill.smooth(Spring::new(0.16, 0.0)).rest(Spring::new(0.35, 0.0)))
-                .radius(W_NEAR / 2.0)
-                .live_fill(live.fill.smooth(Spring::new(0.15, 0.0)))))
+            .child(el().key("msg-scroll-slot").absolute(0.0, 0.0).live_rect(&live.slot)
+                .child(el().key("msg-scroll-thumb").absolute(0.0, 0.0)
+                    .live_rect(live.pill.smooth(Spring::new(0.16, 0.0)).rest(Spring::new(0.35, 0.0)))
+                    .radius(W_NEAR / 2.0)
+                    .live_fill(live.fill.smooth(Spring::new(0.15, 0.0))))))
 }
 
 #[cfg(test)]
