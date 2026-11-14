@@ -1,2 +1,16 @@
-target/
-ref/
+# Build output
+/target/
+
+# Local clones of Rune (the UI framework the app builds on) and of the Fluxer web client (read-only reference)
+/ref/
+
+# Screenshots: `--snap` writes them wherever it is told, and they are not part of the source
+/*.png
+/app/*.png
+
+# Leftovers
+*.part
+*.log
+.DS_Store
+.idea/
+.vscode/
