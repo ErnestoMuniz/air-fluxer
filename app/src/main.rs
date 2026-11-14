@@ -2,6 +2,7 @@
 //! `cargo run --release -p fluxer-app` opens the window (`FLUXER_DEMO=1` for fake data);
 //! `-- --snap out.png [--scene login|code|ip]` renders it headless.
 
+mod anim;
 mod animsize;
 mod auth;
 mod audio;
@@ -344,6 +345,8 @@ fn on_net(s: &mut State, d: net::Done) -> bool {
         }
         net::Done::Profile { res: Err(e), .. } => { eprintln!("fluxer: profile failed: {e}"); false }
         net::Done::Image { .. } => false,
+        // An animation showed its first frame: the view swaps its still for the moving picture.
+        net::Done::Animated { .. } => true,
     }
 }
 
@@ -359,7 +362,7 @@ fn reconcile(s: &mut State) {
     }
     let wanted = wanted_all(s);
     for url in &wanted { s.net.want_image(url) }
-    if s.net.trim_due() { s.net.trim(&wanted.into_iter().collect()) }
+    s.net.trim(&wanted.into_iter().collect());
     subscribe_members(s);
 }
 
@@ -367,7 +370,8 @@ fn reconcile(s: &mut State) {
 /// the messages on screen, and only while the window is focused), the GIF picker's, and the open
 /// profile card's banner.
 fn wanted_all(s: &State) -> Vec<String> {
-    let animate = s.focused.then(|| s.visible.clone());
+    // Until the list reports what is on screen nothing is known to move; the window not focused, nothing moves.
+    let animate = (s.focused && !s.visible.is_empty()).then(|| s.visible.clone());
     let mut urls = s.chat.wanted_images(80, animate, s.picker.open == Some(picker::Tab::Stickers));
     urls.extend(s.picker.home_images());
     urls.extend(s.picker.wanted_images());
@@ -478,8 +482,9 @@ pub fn toggle_deafen(s: &mut State) { s.call.toggle_deafen(s.gateway.as_ref()) }
 
 pub fn set_focus(s: &mut State, focused: bool) {
     s.focused = focused;
-    // Losing the focus needs the still frames; they were not asked for before.
-    if !focused { reconcile(s) }
+    s.net.set_focused(focused);
+    // Losing the focus stops the animations (their pictures are let go in time); gaining it asks for those on screen again.
+    reconcile(s);
 }
 
 pub fn submit(s: &mut State) { s.auth.submit(); }
@@ -580,10 +585,11 @@ pub fn send_sticker(s: &mut State, id: &str) {
     s.notice = None;
     s.net.send_sticker(&cid, id);
     s.picker.close();
+    reconcile(s);
 }
 
 /// A GIF or saved picture goes out as its link; the server turns it into the picture.
-pub fn send_link(s: &mut State, url: String) { send_body(s, url); s.picker.close() }
+pub fn send_link(s: &mut State, url: String) { send_body(s, url); s.picker.close(); reconcile(s) }
 
 pub fn insert_text(s: &mut State, text: &str) { s.draft = TextEdit::new(format!("{}{text}", s.draft.text)) }
 
@@ -596,6 +602,8 @@ pub fn picker_images(s: &mut State) {
     // The moving versions follow once the still ones are on their way.
     for url in s.picker.animated_images() { s.net.want_image(&url) }
     for url in s.chat.wanted_images(0, None, s.picker.open == Some(picker::Tab::Stickers)) { s.net.want_image(&url) }
+    // What the picker asks for is part of what is wanted: pictures it no longer shows are let go.
+    reconcile(s);
 }
 
 /// A connected call in the demo server: two people, one sharing a screen, and the mosaic open.
@@ -1033,6 +1041,78 @@ mod tests {
         assert_eq!(rt.state.call.watching, vec!["demo:demo-v0:c1".to_string()]);
         rt.update(|s, _| watch_stream(s, "c1", false));
         assert!(rt.state.call.watching.is_empty());
+    }
+
+    /// Serves `body` to every request, forever, and returns the address.
+    fn serve_forever(body: Vec<u8>) -> String {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        std::thread::spawn(move || while let Ok((mut c, _)) = l.accept() {
+            let mut buf = [0u8; 2048];
+            let _ = c.read(&mut buf);
+            let _ = write!(c, "HTTP/1.1 200 OK\r\nContent-Type: image/gif\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+            let _ = c.write_all(&body);
+        });
+        base
+    }
+
+    #[test]
+    fn a_gif_on_screen_plays_by_streaming_and_one_off_screen_does_not() {
+        isolate();
+        unsafe { std::env::set_var("FLUXER_RUX_CACHE_DIR", std::env::temp_dir().join(format!("fluxer-anim-cache-{}", std::process::id()))) };
+        let base = serve_forever(anim::test_gif(60, 300, 200));
+        let mut s = State::default();
+        s.chat.media = Some(base.clone());
+        let gif_at = |id: &str| fluxer_client::api::Attachment { id: id.into(), filename: "a.gif".into(), content_type: Some("image/gif".into()),
+            url: Some(format!("{base}/{id}.gif")), width: Some(300), height: Some(200), size: 1 };
+        // The newest message (on screen, the list sticks to the bottom) and one far up (not on screen).
+        let log = s.chat.logs.get_mut("demo-0").unwrap();
+        log.msgs[9_999].attachments = vec![gif_at("near")];
+        log.msgs[2_000].attachments = vec![gif_at("far")];
+        let animated = |id: &str| model::attachment_fetch_url(&format!("{base}/{id}.gif"), true);
+        let env = Env { system_dark: true, scale: 2.0 };
+        let mut rt = Runtime::new(s, ui::view, (1100.0, 700.0), env);
+        rt.update(|s, _| s.net.set_waker(Arc::new(|| {})));
+        let started = Instant::now();
+        while rt.state.net.shown(&animated("near")).is_none() {
+            rt.update(|s, tx| { poll(s, 0.0, tx); });
+            rt.frame(1.0 / 60.0);
+            assert!(started.elapsed() < std::time::Duration::from_secs(10), "the visible GIF never showed a frame");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        for _ in 0..30 { rt.update(|s, tx| { poll(s, 0.0, tx); }); rt.frame(1.0 / 60.0); }
+        assert!(rt.state.net.shown(&animated("far")).is_none(), "an animation off screen is never asked for, let alone decoded");
+        assert_eq!(rt.state.net.playing_count(), 1, "the one on screen plays");
+        // 60 frames of 300x200 would be 60 * 320 KB * 4/3 decoded by the cache; streaming holds the bytes and a few frames.
+        assert!(rt.state.net.held_bytes() < 2 << 20, "held {} bytes", rt.state.net.held_bytes());
+        rt.update(|s, tx| { set_focus(s, false); poll(s, 0.0, tx); });
+        assert_eq!(rt.state.net.playing_count(), 0, "a window in the background pauses its animations");
+    }
+
+    #[test]
+    fn every_gif_tile_of_the_open_picker_plays_not_only_the_one_under_the_pointer() {
+        isolate();
+        unsafe { std::env::set_var("FLUXER_RUX_CACHE_DIR", std::env::temp_dir().join(format!("fluxer-picker-cache-{}", std::process::id()))) };
+        let base = serve_forever(anim::test_gif(20, 200, 150));
+        let mut s = State::default();
+        s.picker.open = Some(picker::Tab::Gifs);
+        s.picker.view = picker::GifView::Trending;
+        s.picker.trending = (0..6).map(|i| picker::Gif { id: i.to_string(), url: format!("https://k/{i}"), src: format!("{base}/still{i}.png"),
+            width: 200, height: 150, anim: Some(format!("{base}/anim{i}.gif")) }).collect();
+        let env = Env { system_dark: true, scale: 2.0 };
+        let mut rt = Runtime::new(s, ui::view, (1100.0, 900.0), env);
+        rt.update(|s, _| s.net.set_waker(Arc::new(|| {})));
+        let started = Instant::now();
+        while rt.state.net.playing_count() < 6 {
+            rt.update(|s, tx| { poll(s, 0.0, tx); });
+            rt.frame(1.0 / 60.0);
+            assert!(started.elapsed() < std::time::Duration::from_secs(10), "only {} of 6 tiles play", rt.state.net.playing_count());
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        rt.update(|s, tx| { s.picker.close(); crate::reconcile(s); poll(s, 0.0, tx); });
+        for _ in 0..3 { rt.frame(1.0 / 60.0); }
+        assert_eq!(rt.state.net.playing_count(), 0, "closing the picker stops what it played");
     }
 
     #[test]

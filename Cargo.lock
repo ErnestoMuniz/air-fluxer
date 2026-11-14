@@ -1423,6 +1423,7 @@ dependencies = [
  "emojis",
  "fluxer-client",
  "futures-util",
+ "image",
  "libpulse-binding",
  "libpulse-simple-binding",
  "livekit",

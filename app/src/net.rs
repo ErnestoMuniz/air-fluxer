@@ -4,7 +4,7 @@
 
 use fluxer_client::api::{self, Api, Message};
 use fluxer_client::rest::{self, Endpoints};
-use rune::{Image, ImageCache, Waker};
+use rune::{Image, ImageCache, Pixels, Waker};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::Arc;
@@ -15,9 +15,6 @@ const MAX_MEDIA_BYTES: u64 = 12 * 1024 * 1024;
 /// Largest file we upload (the server may allow less).
 const MAX_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
 const MAX_IN_FLIGHT_IMAGES: usize = 24;
-/// An animation decodes every frame, so a small file can take tens of megabytes of RAM: one that
-/// would take more than this decoded is not decoded at all, and its still picture stands in.
-pub const MAX_ANIMATION_BYTES: usize = 64 << 20;
 /// Decoded pictures nothing asks for any more are kept (so going back is instant) up to this much.
 const COLD_BUDGET: usize = 64 << 20;
 /// An animation nothing asks for any more (scrolled away, window unfocused) is let go after this.
@@ -84,8 +81,10 @@ pub fn profile_key(user: &str, guild: Option<&str>) -> String { format!("{user}@
 pub enum Done {
     History { channel: String, res: Result<Vec<Message>, String> },
     Sent { channel: String, local: String, res: Result<Message, String> },
-    /// A downloaded picture; the number is what it takes decoded when it is an animation, else 0.
-    Image { url: String, res: Result<(Vec<u8>, usize), String> },
+    /// A downloaded picture, and its canvas and frame count when it is an animation.
+    Image { url: String, res: Result<(Vec<u8>, Option<(usize, usize, usize)>), String> },
+    /// An animation showed its first frame: the picture can switch from its still to the moving one.
+    Animated { url: String },
     Endpoints(Result<Endpoints, String>),
     Reacted(Result<(), String>),
     ProfileSaved { guild: Option<String>, res: Result<serde_json::Value, String> },
@@ -94,19 +93,33 @@ pub enum Done {
     Posted(Result<(), String>),
 }
 
-/// A decoded picture the UI can draw, and what the app needs to decide when to let it go.
+/// A picture the UI can draw: its pixels, and its size once known.
+#[derive(Clone)]
+pub struct Shown {
+    pub pixels: Pixels,
+    pub size: Option<[u32; 2]>,
+}
+
+enum Kind {
+    Still(Image),
+    /// Played by `anim::Anims`: only the encoded bytes and the current frame are held.
+    Animation { id: u64, pixels: Pixels, encoded: usize, canvas: (usize, usize), shown: bool, playing: bool },
+}
+
+/// A picture the app holds, and what it needs to decide when to let it go.
 struct Entry {
-    img: Image,
-    /// Decoded size when it is an animation (known from its headers), else 0.
-    animation: usize,
+    kind: Kind,
     /// Since when nothing on screen or about to be asks for it.
     cold_since: Option<Instant>,
 }
 
 impl Entry {
-    /// Decoded size in memory: the mips of a still, or every frame of an animation.
+    /// Memory it holds: the mips of a still, or an animation's encoded bytes and working frames.
     fn bytes(&self) -> usize {
-        if self.animation > 0 { self.animation } else { self.img.size().map_or(0, |[w, h]| w as usize * h as usize * 16 / 3) }
+        match &self.kind {
+            Kind::Still(img) => img.size().map_or(0, |[w, h]| w as usize * h as usize * 16 / 3),
+            Kind::Animation { encoded, canvas, .. } => encoded + canvas.0 * canvas.1 * 4 * 3,
+        }
     }
 }
 
@@ -119,7 +132,11 @@ pub struct Net {
     logo: Option<Image>,
     ready: HashMap<String, Entry>,
     requested: HashSet<String>,
-    last_trim: Instant,
+    anims: Option<crate::anim::Anims>,
+    /// Animated pictures whose element is on screen (reported by the view), and whether the window
+    /// has the focus: an animation plays only when both hold and it is still wanted.
+    on_screen: HashSet<String>,
+    focused: bool,
     queue: VecDeque<String>,
     in_flight: usize,
 }
@@ -127,7 +144,7 @@ pub struct Net {
 impl Default for Net {
     fn default() -> Self {
         let (tx, rx) = channel();
-        Net { api: None, tx, rx, wake: None, cache: None, logo: None, ready: HashMap::new(), requested: HashSet::new(), last_trim: Instant::now(), queue: VecDeque::new(), in_flight: 0 }
+        Net { api: None, tx, rx, wake: None, cache: None, logo: None, ready: HashMap::new(), requested: HashSet::new(), anims: None, on_screen: HashSet::new(), focused: true, queue: VecDeque::new(), in_flight: 0 }
     }
 }
 
@@ -136,6 +153,7 @@ impl Net {
         let cache = ImageCache::new(wake.clone());
         self.logo = Some(cache.svg(&include_bytes!("../assets/logo.svg")[..], 128.0, 2.0));
         self.cache = Some(cache);
+        self.anims = Some(crate::anim::Anims::start(self.tx.clone(), wake.clone()));
         self.wake = Some(wake);
         std::thread::Builder::new().name("fluxer-prune".into()).spawn(|| prune_cache(DISK_CACHE_BYTES)).ok();
     }
@@ -243,32 +261,76 @@ impl Net {
             let Some(url) = self.queue.pop_front() else { return };
             self.in_flight += 1;
             let u = url.clone();
-            self.job(move || fetch_cached(&u).and_then(|bytes| match crate::animsize::decoded_bytes(&bytes) {
-                Some(n) if n > MAX_ANIMATION_BYTES => Err(format!("animation too large ({} MB decoded)", n >> 20)),
-                n => Ok((bytes, n.unwrap_or(0))),
+            self.job(move || fetch_cached(&u).and_then(|bytes| match crate::animsize::canvas(&bytes) {
+                Some((w, h, _)) if w * h > crate::anim::MAX_CANVAS_PIXELS => Err(format!("animation canvas too large ({w}x{h})")),
+                c => Ok((bytes, c)),
             }), move |res| Done::Image { url, res });
         }
     }
 
     pub fn logo(&self) -> Option<&Image> { self.logo.as_ref() }
 
-    pub fn image(&self, url: &str) -> Option<&Image> { self.ready.get(url).map(|e| &e.img) }
+    /// A still picture (not an animation: see `shown`).
+    pub fn image(&self, url: &str) -> Option<&Image> {
+        match &self.ready.get(url)?.kind { Kind::Still(img) => Some(img), _ => None }
+    }
 
-    /// Decoded memory held by pictures that are loaded (animations at their full decoded size).
+    /// What to draw for `url`: a still, or an animation once its first frame is decoded.
+    pub fn shown(&self, url: &str) -> Option<Shown> {
+        match &self.ready.get(url)?.kind {
+            Kind::Still(img) => Some(Shown { pixels: img.pixels().clone(), size: img.size() }),
+            Kind::Animation { pixels, shown: true, .. } => Some(Shown { pixels: pixels.clone(), size: Some({ let (w, h) = pixels.size(); [w, h] }) }),
+            Kind::Animation { .. } => None,
+        }
+    }
+
+    /// How many animations are playing now.
+    #[cfg(test)]
+    pub fn playing_count(&self) -> usize { self.ready.values().filter(|e| matches!(e.kind, Kind::Animation { playing: true, .. })).count() }
+
+    /// Memory held by loaded pictures (an animation: its encoded bytes and working frames).
     pub fn held_bytes(&self) -> usize { self.ready.values().map(Entry::bytes).sum() }
 
-    /// Lets go of pictures the screen no longer needs. `keep` is everything wanted now. Animations
-    /// (the big ones) go once cold for a few seconds; stills stay while the cold ones fit in a
-    /// budget, oldest first. What is let go is asked for again, from the disk cache, if it is
-    /// wanted later; what is still drawn stays alive in the tree that draws it.
+    /// The view says the element showing animated picture `url` came on screen or left it.
+    pub fn set_on_screen(&mut self, url: &str, on: bool) {
+        if on { self.on_screen.insert(url.to_string()); } else { self.on_screen.remove(url); }
+        self.apply_playing(url);
+    }
+
+    /// The window gained or lost the focus: animations stop in the background and resume after.
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+        let urls: Vec<String> = self.ready.iter().filter(|(_, e)| matches!(e.kind, Kind::Animation { .. })).map(|(u, _)| u.clone()).collect();
+        for u in urls { self.apply_playing(&u) }
+    }
+
+    /// Plays or pauses the animation at `url` to match what it should be doing now.
+    fn apply_playing(&mut self, url: &str) {
+        let want = self.focused && self.on_screen.contains(url);
+        let Some(e) = self.ready.get_mut(url) else { return };
+        let Kind::Animation { id, playing, .. } = &mut e.kind else { return };
+        // A picture nothing asks for any more is paused whatever the view last said: its element may
+        // be gone without a last report.
+        let want = want && e.cold_since.is_none();
+        if *playing != want {
+            *playing = want;
+            if let Some(a) = &self.anims { a.play(*id, want) }
+        }
+    }
+
+    /// Lets go of pictures the screen no longer needs. `keep` is everything wanted now. Pictures
+    /// nothing wants are paused at once; animations go after a few seconds, stills stay while the
+    /// unwanted ones fit in a budget, oldest first. What is let go is asked for again, from the disk
+    /// cache, if it is wanted later; what is still drawn stays alive in the tree that draws it.
     pub fn trim(&mut self, keep: &HashSet<String>) {
         let now = Instant::now();
-        self.last_trim = now;
         for (url, e) in self.ready.iter_mut() {
             if keep.contains(url) { e.cold_since = None } else if e.cold_since.is_none() { e.cold_since = Some(now) }
         }
+        let urls: Vec<String> = self.ready.iter().filter(|(_, e)| matches!(e.kind, Kind::Animation { .. })).map(|(u, _)| u.clone()).collect();
+        for u in urls { self.apply_playing(&u) }
         let mut gone: Vec<String> = self.ready.iter()
-            .filter(|(_, e)| e.animation > 0 && e.cold_since.is_some_and(|t| now.duration_since(t) >= ANIMATION_GRACE))
+            .filter(|(_, e)| matches!(e.kind, Kind::Animation { .. }) && e.cold_since.is_some_and(|t| now.duration_since(t) >= ANIMATION_GRACE))
             .map(|(u, _)| u.clone()).collect();
         let mut cold: Vec<(Instant, &String, usize)> = self.ready.iter()
             .filter(|(u, _)| !gone.contains(u))
@@ -281,13 +343,10 @@ impl Net {
             gone.push(url.clone());
         }
         for url in gone {
-            self.ready.remove(&url);
+            if let Some(Entry { kind: Kind::Animation { id, .. }, .. }) = self.ready.remove(&url) && let Some(a) = &self.anims { a.close(id) }
             self.requested.remove(&url);
         }
     }
-
-    /// True when `trim` has not run for a second.
-    pub fn trim_due(&self) -> bool { self.last_trim.elapsed() >= Duration::from_secs(1) }
 
     /// Drains finished jobs. Images are handled here; the rest is returned for the app to apply.
     pub fn drain(&mut self) -> Vec<Done> {
@@ -296,10 +355,23 @@ impl Net {
             match d {
                 Done::Image { url, res } => {
                     self.in_flight = self.in_flight.saturating_sub(1);
-                    if let (Ok((bytes, animation)), Some(cache)) = (res, &self.cache) {
-                        self.ready.insert(url, Entry { img: cache.load(bytes), animation, cold_since: None });
+                    if let (Ok((bytes, canvas)), Some(cache)) = (res, &self.cache) {
+                        let kind = match (canvas, &mut self.anims) {
+                            (Some((w, h, _)), Some(anims)) => {
+                                let encoded = bytes.len();
+                                let (id, pixels) = anims.open(&url, bytes.into());
+                                Kind::Animation { id, pixels, encoded, canvas: (w, h), shown: false, playing: false }
+                            }
+                            _ => Kind::Still(cache.load(bytes)),
+                        };
+                        self.ready.insert(url.clone(), Entry { kind, cold_since: None });
+                        self.apply_playing(&url);
                     }
                     self.pump_images();
+                }
+                Done::Animated { url } => {
+                    if let Some(Entry { kind: Kind::Animation { shown, .. }, .. }) = self.ready.get_mut(&url) { *shown = true }
+                    out.push(Done::Animated { url });
                 }
                 other => out.push(other),
             }

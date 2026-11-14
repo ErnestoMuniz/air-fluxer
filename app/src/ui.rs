@@ -296,13 +296,14 @@ fn channel_list(s: &State) -> El {
     let banner = s.chat.nav.guild.and_then(|g| s.chat.guilds.get(g)).and_then(|g| {
         let (media, hash) = (s.chat.media.as_deref()?, g.banner.as_deref()?);
         let still = api::banner_still_url(media, &g.id, hash, crate::model::BANNER_SIZE);
-        Some(playing(s, &api::banner_url(media, &g.id, hash, crate::model::BANNER_SIZE), &still).cloned())
+        let animated = api::banner_url(media, &g.id, hash, crate::model::BANNER_SIZE);
+        Some((playing(s, &animated, &still), animated))
     });
     let header = match banner {
         // A banner replaces the plain title bar: the picture (animated if it is) with the name over it.
-        Some(img) => {
-            let pic = el().key("guild-banner").size(list_w(s), banner_h(s));
-            let pic = match img { Some(i) => pic.pixels(i.pixels()), None => pic.fill(p.rail) };
+        Some((img, animated)) => {
+            let pic = el().key("guild-banner").size(list_w(s), banner_h(s)).on_visible(on_screen(animated));
+            let pic = match img { Some(i) => pic.pixels(&i.pixels), None => pic.fill(p.rail) };
             col().w(list_w(s)).h(banner_h(s)).child(pic.child(el().absolute(0.0, 0.0).w(list_w(s)).h(banner_h(s) * 0.4)
                 .linear_gradient(std::f32::consts::PI, [(0.0, oklcha(0.0, 0.0, 0.0, 0.55)), (1.0, oklcha(0.0, 0.0, 0.0, 0.0))]))
                 .child(el().absolute(16.0, 14.0).child(text(title).font(type_::TITLE).color(rune::tok::theme(true).knob))))
@@ -687,18 +688,24 @@ fn human_size(b: u64) -> String {
 
 const GIF_MAX: f32 = 300.0;
 
-/// The animated picture, or, while the window is not focused, its still first frame (once loaded).
-fn playing<'a>(s: &'a State, animated: &str, still: &str) -> Option<&'a rune::Image> {
-    // The still is the way in (it is small and arrives first) and the stand-in for an animation that is
-    // too big to decode or has not been asked for; the animation shows once loaded, while focused.
-    if s.focused { s.net.image(animated).or_else(|| s.net.image(still)) } else { s.net.image(still).or_else(|| s.net.image(animated)) }
+/// The animated picture once its first frame is decoded (it holds the last one shown while paused),
+/// else the still, which is small and arrives first.
+fn playing(s: &State, animated: &str, still: &str) -> Option<crate::net::Shown> {
+    s.net.shown(animated).or_else(|| s.net.shown(still))
+}
+
+/// The view's report that the element showing animated picture `url` is on screen or not: the
+/// animation plays only while it is. Moves no state the view reads, so it asks for no new view.
+fn on_screen(url: String) -> impl Fn(&mut State, bool, &mut rune::Tx) + 'static {
+    move |s: &mut State, on: bool, tx: &mut rune::Tx| { s.net.set_on_screen(&url, on); tx.live_only() }
 }
 
 /// An animated picture with the "GIF" tag in its corner; the grey box stands in until it arrives.
-fn gif_view(key: String, w: f32, h: f32, img: Option<&rune::Image>) -> El {
+/// `animated` is the address of the moving version, so it plays while this is on screen.
+fn gif_view(key: String, w: f32, h: f32, img: Option<&crate::net::Shown>, animated: String) -> El {
     let t = tok::theme(true);
-    let base = el().key(key).size(w, h).radius(radius::SM);
-    let base = match img { Some(i) => base.pixels(i.pixels()), None => base.fill(t.control_off) };
+    let base = el().key(key).size(w, h).radius(radius::SM).on_visible(on_screen(animated));
+    let base = match img { Some(i) => base.pixels(&i.pixels), None => base.fill(t.control_off) };
     base.child(el().absolute(8.0, 8.0).child(
         row().px(6.0).py(2.0).radius(4.0).fill(oklcha(0.0, 0.0, 0.0, 0.62)).center()
             .child(text("GIF").font(rune::tok::TextStyle::new(11.0, 800.0)).color(t.text))))
@@ -712,8 +719,9 @@ fn attachment(s: &State, a: &Attachment) -> El {
         let (w, h) = (a.width.unwrap_or(300) as f32, a.height.unwrap_or(300) as f32);
         let k = (GIF_MAX / w).min(GIF_MAX / h).min(1.0);
         let (dw, dh) = ((w * k).max(40.0), (h * k).max(40.0));
-        let img = a.url.as_deref().and_then(|u| playing(s, &crate::model::attachment_fetch_url(u, true), &crate::model::attachment_fetch_url(u, false)));
-        return gif_view(format!("att-{}", a.id), dw, dh, img).cursor(rune::Cursor::Pointer).on_press_tx(open);
+        let animated = a.url.as_deref().map(|u| crate::model::attachment_fetch_url(u, true)).unwrap_or_default();
+        let img = a.url.as_deref().and_then(|u| playing(s, &animated, &crate::model::attachment_fetch_url(u, false)));
+        return gif_view(format!("att-{}", a.id), dw, dh, img.as_ref(), animated).cursor(rune::Cursor::Pointer).on_press_tx(open);
     }
     if a.is_image() {
         let (w, h) = (a.width.unwrap_or(320) as f32, a.height.unwrap_or(200) as f32);
@@ -907,11 +915,12 @@ fn reply_bar(s: &State, m: &Msg) -> Option<El> {
 fn embed_card(s: &State, key: String, e: &Embed) -> El {
     let (p, t) = (pal(), tok::theme(true));
     if e.gif && let Some(u) = &e.image {
-        let img = playing(s, &crate::model::embed_image_url(u, true), &crate::model::embed_image_url(u, false));
-        let (w, h) = img.and_then(|i| i.size()).map(|[w, h]| (w as f32, h as f32))
+        let animated = crate::model::embed_image_url(u, true);
+        let img = playing(s, &animated, &crate::model::embed_image_url(u, false));
+        let (w, h) = img.as_ref().and_then(|i| i.size).map(|[w, h]| (w as f32, h as f32))
             .or(e.image_size.map(|(w, h)| (w as f32, h as f32))).unwrap_or((GIF_MAX, 200.0));
         let k = (GIF_MAX / w).min(GIF_MAX / h).min(1.0);
-        let gif = gif_view(key, (w * k).max(40.0), (h * k).max(40.0), img);
+        let gif = gif_view(key, (w * k).max(40.0), (h * k).max(40.0), img.as_ref(), animated);
         return match e.url.clone() { Some(u) => gif.cursor(rune::Cursor::Pointer).on_press_tx(move |_: &mut State, tx: &mut rune::Tx| { let _ = tx.open_url(&u); }), None => gif };
     }
     // A link's thumbnail is the small square on the right; a big picture or a video takes the

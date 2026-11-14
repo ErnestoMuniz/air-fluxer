@@ -1,16 +1,20 @@
-//! How much memory an animated picture will take once decoded, read from its headers without
-//! decoding it. Rune decodes every frame of an animation to RGBA plus mips (16/3 bytes a pixel), so
-//! a 60 KB file can become 50 MB; knowing that up front lets the app refuse the outliers.
+//! What an animated picture is (canvas and frame count), read from its headers without decoding it,
+//! so the app can tell an animation from a still and refuse a canvas too big to play.
 
-/// Decoded size in bytes of a GIF, animated WebP or APNG with more than one frame; `None` for a
-/// still picture or any other format.
-pub fn decoded_bytes(b: &[u8]) -> Option<usize> {
+/// Canvas width, height and frame count of a GIF, animated WebP or APNG with more than one frame;
+/// `None` for a still picture or any other format.
+pub fn canvas(b: &[u8]) -> Option<(usize, usize, usize)> {
     let (w, h, frames) = if b.starts_with(b"GIF8") { gif(b)? }
         else if b.len() > 12 && &b[..4] == b"RIFF" && &b[8..12] == b"WEBP" { webp(b)? }
         else if b.starts_with(b"\x89PNG\r\n\x1a\n") { apng(b)? }
         else { return None };
-    (frames > 1).then(|| w * h * frames * 16 / 3)
+    (frames > 1).then_some((w, h, frames))
 }
+
+/// What Rune's cache would take decoding all of it: 16/3 bytes a pixel a frame (kept only to say
+/// how much the streaming player saves).
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn decoded_bytes(b: &[u8]) -> Option<usize> { canvas(b).map(|(w, h, frames)| w * h * frames * 16 / 3) }
 
 fn skip_sub_blocks(b: &[u8], mut pos: usize) -> Option<usize> {
     loop {

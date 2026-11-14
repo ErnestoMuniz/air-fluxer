@@ -58,8 +58,8 @@ pub struct Picker {
     pub memes: Option<Vec<Meme>>,
     pub emoji_group: usize,
     pub error: Option<String>,
-    /// The animated version of the tile the pointer is over: the only one that is loaded and plays.
-    pub hover: Option<String>,
+    /// The animated pictures of the tiles on screen (reported by the view): the ones loaded and playing.
+    pub on_screen: std::collections::HashSet<String>,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     wake: Option<Waker>,
@@ -69,7 +69,7 @@ impl Default for Picker {
     fn default() -> Self {
         let (tx, rx) = channel();
         Picker { open: None, query: TextEdit::new(""), view: GifView::Home, categories: vec![], trending: vec![], results: vec![], loading: false,
-            memes: None, emoji_group: 0, error: None, hover: None, tx, rx, wake: None }
+            memes: None, emoji_group: 0, error: None, on_screen: Default::default(), tx, rx, wake: None }
     }
 }
 
@@ -120,7 +120,7 @@ impl Picker {
         }
     }
 
-    pub fn close(&mut self) { self.open = None; self.hover = None }
+    pub fn close(&mut self) { self.open = None; self.on_screen.clear() }
 
     /// Loads the GIF home page ahead of time, so the picker opens with its pictures already there.
     pub fn prefetch(&mut self, api: &Option<Arc<Api>>) {
@@ -178,11 +178,10 @@ impl Picker {
     }
 
     /// The playing versions of what the open tab shows, loaded after the still ones.
-    /// The moving pictures to load: only the one under the pointer (every frame of an animation is
-    /// decoded to memory, so a page of them would take hundreds of megabytes). The rest show stills.
+    /// The moving pictures to load: those of the tiles on screen. The rest show stills until they scroll in.
     pub fn animated_images(&self) -> Vec<String> {
         if self.open != Some(Tab::Gifs) { return vec![] }
-        self.hover.iter().cloned().collect()
+        self.on_screen.iter().cloned().collect()
     }
 
     pub fn wanted_images(&self) -> Vec<String> {

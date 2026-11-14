@@ -192,17 +192,19 @@ fn status_line(s: &State) -> Option<El> {
 fn tile(s: &State, key: String, url: &str, anim: Option<&str>, w: f32, h: f32, label: Option<&str>) -> El {
     let p = pal();
     let mut e = el().key(key).size(w, h).radius(8.0).fill(p.input).border(1.0, p.line).cursor(rune::Cursor::Pointer);
-    // Only the tile under the pointer moves: its animation is loaded when the pointer arrives.
+    // Every tile on screen moves: its animation is loaded when the tile scrolls in and let go when it leaves.
     if let Some(a) = anim {
         let a = a.to_string();
-        e = e.on_hover_change(move |s: &mut State, inside, _| {
-            if inside { if s.picker.hover.as_deref() != Some(a.as_str()) { s.picker.hover = Some(a.clone()); crate::picker_images(s) } }
-            else if s.picker.hover.as_deref() == Some(a.as_str()) { s.picker.hover = None }
+        e = e.on_visible(move |s: &mut State, on, tx| {
+            if on { s.picker.on_screen.insert(a.clone()); } else { s.picker.on_screen.remove(&a); }
+            s.net.set_on_screen(&a, on);
+            crate::picker_images(s);
+            tx.live_only();
         });
     }
-    let still = s.net.image(url);
-    let playing = if s.focused { anim.and_then(|a| s.net.image(a)) } else { None };
-    if let Some(img) = playing.or(still) { e = e.pixels(img.pixels()) }
+    let still = s.net.shown(url);
+    let playing = if s.focused { anim.and_then(|a| s.net.shown(a)) } else { None };
+    if let Some(img) = playing.or(still) { e = e.pixels(&img.pixels) }
     if let Some(l) = label {
         e = e.child(el().absolute(0.0, 0.0).size(w, h).radius(8.0).fill(oklcha(0.0, 0.0, 0.0, 0.42)))
             .child(row().absolute(0.0, 0.0).size(w, h).center().child(text(l.to_string()).font(rune::tok::TextStyle::new(16.0, 800.0)).color(tok::theme(true).text)));

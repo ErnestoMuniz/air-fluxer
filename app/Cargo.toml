@@ -18,3 +18,5 @@ nnnoiseless = "0.5"
 libpulse-binding = "2"
 libpulse-simple-binding = "2"
 emojis = "0.9"
+# Animated pictures are decoded a frame at a time (see anim.rs), not all at once as Rune's cache does.
+image = { version = "0.25", default-features = false, features = ["gif", "webp", "png"] }
