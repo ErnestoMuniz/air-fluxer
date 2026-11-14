@@ -1,0 +1,4 @@
+# libwebrtc (voice chat) is built against Chromium's libc++: its C++ glue must be compiled with clang.
+[env]
+CXX = "clang++"
+CC = "clang"

@@ -6,3 +6,8 @@ exclude = ["ref"]
 [workspace.package]
 edition = "2024"
 license = "AGPL-3.0-only"
+
+# Image decoding (GIF/WebP frames) is unusably slow unoptimized; keep our own code fast to compile
+# but build every dependency, Rune included, with optimizations even in debug builds.
+[profile.dev.package."*"]
+opt-level = 3
