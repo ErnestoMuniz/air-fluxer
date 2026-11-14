@@ -89,7 +89,7 @@ pub fn layers(s: &State) -> Vec<El> {
 }
 
 /// The bar that floats over a message under the pointer: three quick reactions and the emoji picker.
-pub fn reaction_bar(s: &State, id: &str) -> El {
+pub fn reaction_bar(id: &str) -> El {
     let (p, t) = (pal(), tok::theme(true));
     let quick = |glyph: &'static str| {
         let id = id.to_string();
@@ -237,7 +237,6 @@ fn gifs_body(s: &State) -> El {
                 tiles.push(tile(s, format!("gif-cat-{i}"), &c.preview_url(), c.anim.as_deref(), w, 132.0, Some(&c.name))
                     .on_press(move |s: &mut State| { let api = s.net.api().cloned(); s.picker.query = rune::TextEdit::new(name.clone()); s.picker.search(&name, &api); crate::picker_images(s) }));
             }
-            for pair in tiles.chunks(2) { let _ = pair; }
             let mut it = tiles.into_iter();
             while let Some(a) = it.next() {
                 let mut r = row().gap(8.0).child(a);

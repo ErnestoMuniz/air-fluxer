@@ -270,7 +270,7 @@ mod tests {
             {"id": "b", "name": "mod", "position": 5, "unicode_emoji": "⭐"},
         ]}]}));
         r.set_roles("g", "u1", vec!["a".into(), "b".into()]);
-        assert_eq!(r.top_role_icon("g", "u1").map(|(i, n, h, e)| (i, n)), Some(("b".into(), "mod".into())), "the highest role's icon shows");
+        assert_eq!(r.top_role_icon("g", "u1").map(|(i, n, _, _)| (i, n)), Some(("b".into(), "mod".into())), "the highest role's icon shows");
         let roles = r.member_roles_sorted("g", "u1");
         assert_eq!(roles.len(), 2);
         assert_eq!(roles[0].0, "b".to_string());

@@ -316,7 +316,8 @@ async fn engine(mut cmds: UnboundedReceiver<Cmd>, out: mpsc::Sender<Ev>, wake: W
                             l.capture = None;
                             l.capture = Some(start_capture(dev, shared.clone(), Some(l.frames.clone())));
                         } else if meter.is_some() {
-                            meter = None;
+                            // The old capture lets go of the device before the new one opens it.
+                            drop(meter.take());
                             meter = Some(start_capture(dev, shared.clone(), None));
                         }
                     }

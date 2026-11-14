@@ -206,15 +206,21 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
 
-    /// A server that answers each GET with the next canned JSON body.
+    /// A server that answers each GET with the next canned JSON body (the last one again when they
+    /// run out). A connection that closes without sending a request, as an HTTP client's spare
+    /// connection may, takes no body.
     fn serve(bodies: Vec<&'static str>) -> String {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", l.local_addr().unwrap());
-        std::thread::spawn(move || for b in bodies {
-            let (mut c, _) = l.accept().unwrap();
-            let mut buf = [0u8; 4096];
-            let _ = c.read(&mut buf);
-            let _ = write!(c, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{b}", b.len());
+        std::thread::spawn(move || {
+            let mut next = 0;
+            while let Ok((mut c, _)) = l.accept() {
+                let mut buf = [0u8; 4096];
+                if c.read(&mut buf).unwrap_or(0) == 0 { continue }
+                let b = bodies[next.min(bodies.len() - 1)];
+                next += 1;
+                let _ = write!(c, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{b}", b.len());
+            }
         });
         url
     }
