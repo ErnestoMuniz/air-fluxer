@@ -92,6 +92,8 @@ pub struct State {
     pub visible: std::ops::Range<usize>,
     /// A typing notice arrived and its fade-out still has to be scheduled.
     typing_wake: bool,
+    /// The scroll thumb of the message list.
+    pub thumb: ui::thumb::Thumb,
 }
 
 fn demo_chat() -> Chat {
@@ -138,7 +140,7 @@ impl Default for State {
             rail_hover: None, settings_open: false, pf: Default::default(), prof: [TextEdit::new(""), TextEdit::new(""), TextEdit::new(""), TextEdit::new("")],
             picker: Default::default(), prefs: prefs::load(), plus_open: false, msg_hover: None, react_picker: None, highlighted: None, pointer: rune::Live::new([0.0, 0.0]), video: None, customize_open: false, notice: None,
             ctx: None, profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
-            intro: 0.0, intro_t0: None, chat: demo_chat(), net: net::Net::default(), draft: TextEdit::new(""), gateway: None, subscribed: None, synced_guilds: Default::default(), show_members: true, call: Default::default(), focused: true, visible: 0..0, typing_wake: false,
+            intro: 0.0, intro_t0: None, chat: demo_chat(), net: net::Net::default(), draft: TextEdit::new(""), gateway: None, subscribed: None, synced_guilds: Default::default(), show_members: true, call: Default::default(), focused: true, visible: 0..0, typing_wake: false, thumb: Default::default(),
         }
     }
 }
@@ -532,7 +534,6 @@ pub fn toggle_reaction(s: &mut State, message: &str, emoji: &str) {
 /// Opens the profile card of `user` beside the element keyed `anchor`, and asks for the full profile.
 pub fn show_profile(s: &mut State, user: &User, anchor: &str) {
     let guild = s.chat.nav.guild.and_then(|g| s.chat.guilds.get(g)).map(|g| g.id.clone());
-    let key = net::profile_key(&user.id, guild.as_deref());
     s.net.profile(&user.id, guild.as_deref());
     s.profile = Some(Prof { user: user.clone(), anchor: anchor.to_string(), at: None });
 }
@@ -640,6 +641,8 @@ fn main() {
             ("call", |s| { demo_call(s); }),
             ("call-watch", |s| { demo_call(s); s.call.watching.push("demo:demo-v0:c1".into()); }),
             ("dm", |s| { s.chat.open_guild(None); }),
+            // The message list's scroll thumb, shown as with the pointer near it (see `--scene scroll`).
+            ("scroll", |s| { s.thumb.pin(); }),
             // The settings dialog, for looking at it without clicking (see `--scene settings`).
             ("settings", |s| {
                 s.settings_open = true;
@@ -764,7 +767,7 @@ fn main() {
                 s.chat.roster.remember(&lion);
                 s.chat.roster.remember(&namorada);
                 s.chat.roster.set_nick("demo", "2", Some("Namorada do Ronaldinho"));
-                let mut mk = |id: &str, a: U, body: &str, ts: i64| {
+                let mk = |id: &str, a: U, body: &str, ts: i64| {
                     let mut m = Msg::local(id.into(), a, body.into(), Delivery::Sent);
                     m.ts = Some(ts);
                     m
@@ -1113,6 +1116,23 @@ mod tests {
         rt.update(|s, tx| { s.picker.close(); crate::reconcile(s); poll(s, 0.0, tx); });
         for _ in 0..3 { rt.frame(1.0 / 60.0); }
         assert_eq!(rt.state.net.playing_count(), 0, "closing the picker stops what it played");
+    }
+
+    #[test]
+    fn dragging_the_scroll_thumb_scrolls_the_message_list() {
+        let mut rt = rt();
+        for _ in 0..5 { rt.frame(1.0 / 60.0); }
+        assert!(rt.find("9999").is_some() && rt.find("0").is_none(), "the list opens at its newest message");
+        // The thumb sits at the end of its track at the right edge of the list; pull it to the top.
+        let (x, y) = rt.find("msg-scroll-track").expect("the track is mounted");
+        rt.pointer_move(x, y);
+        for _ in 0..3 { rt.frame(1.0 / 60.0); }
+        rt.pointer_down(x, y);
+        rt.pointer_move(x, 0.0);
+        rt.pointer_up(x, 0.0);
+        for _ in 0..30 { rt.frame(1.0 / 60.0); }
+        assert!(rt.find("0").is_some(), "dragged to the top, the oldest message is shown");
+        assert!(rt.find("9999").is_none());
     }
 
     #[test]

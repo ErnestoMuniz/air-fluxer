@@ -12,6 +12,7 @@ use rune_kit::{Button, ButtonVariant, Kit, Markdown, MarkdownStyle, TextArea, Te
 mod compose;
 mod mosaic;
 pub mod settings;
+pub mod thumb;
 
 const RAIL_WIDTH: f32 = 72.0;
 
@@ -33,8 +34,6 @@ fn resize_handle(key: &str, grow_right: bool, current: f32, set: fn(&mut State, 
         })
 }
 
-
-const STROKE: &str = r#"stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none""#;
 
 static SPEAKER: rune::Icon = rune::Icon { name: "app-speaker", view: 24.0, body: r#"<path d="M4 9v6h4l5 4V5L8 9z" fill="currentColor"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>"# };
 static MIC: rune::Icon = rune::Icon { name: "app-mic", view: 24.0, body: r#"<rect x="9" y="3" width="6" height="12" rx="3" fill="currentColor"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>"# };
@@ -296,7 +295,7 @@ fn channel_list(s: &State) -> El {
     let banner = s.chat.nav.guild.and_then(|g| s.chat.guilds.get(g)).and_then(|g| {
         let (media, hash) = (s.chat.media.as_deref()?, g.banner.as_deref()?);
         let still = api::banner_still_url(media, &g.id, hash, crate::model::BANNER_SIZE);
-        let animated = api::banner_url(media, &g.id, hash, crate::model::BANNER_SIZE);
+        let animated = api::banner_url(media, &g.id, hash, crate::model::BANNER_ANIM_SIZE);
         Some((playing(s, &animated, &still), animated))
     });
     let header = match banner {
@@ -356,7 +355,7 @@ fn voice_block(s: &State, mut list: El, ch: &Channel, vi: usize) -> El {
             .child(ring)
             .child(text(name).font(type_::BODY).color(t.text).truncate().min_w(0.0));
         if let Some(u) = user && let Some(ic) = top_role_el(s, u) { line = line.child(ic).child(el().grow(1.0)) } else { line = line.child(el().grow(1.0)) }
-        if let Some(u) = user.cloned() { let key = format!("vp-{}-{}", ch.id, v.user_id); line = line.on_secondary_press(move |s: &mut State, p, _| open_user_menu(s, &u, p)) }
+        if let Some(u) = user.cloned() { line = line.on_secondary_press(move |s: &mut State, p, _| open_user_menu(s, &u, p)) }
         if v.self_stream {
             line = line.child(row().h(16.0).px(5.0).radius(4.0).center().fill(p.unread).child(text("LIVE").font(type_::SECTION).color(t.knob)));
         }
@@ -779,8 +778,6 @@ const FOLLOW_WINDOW_MS: i64 = 7 * 60_000;
 
 static ARROW_IN: rune::Icon = rune::Icon { name: "app-arrow-in", view: 24.0, body: r#"<path d="M3 12h15M13 5.5L19.5 12 13 18.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"# };
 
-fn open_link(_: &mut State, url: &str, tx: &mut rune::Tx) { let _ = tx.open_url(url); }
-
 /// Fluxer's own welcome line ("Welcome, Lion!"), posted by the system account on join.
 fn is_welcome(m: &Msg) -> bool {
     (m.author.username.eq_ignore_ascii_case("fluxer") || m.author.display().eq_ignore_ascii_case("fluxer"))
@@ -995,7 +992,7 @@ fn message(s: &State, m: &Msg, prev: Option<&Msg>) -> El {
     let mut body = col().gap(2.0).grow(1.0).min_w(0.0);
     if !follow {
         let mut head = row().gap(8.0).center_y()
-            .child({ let (u, key) = (m.author.clone(), format!("av-{}", m.id)); opens_profile(text(name_in(s, &m.author)).font(type_::TITLE).color(name_color(s, &m.author.id)).on_secondary_press(move |s: &mut State, p, _| open_user_menu(s, &u, p)), &m.author, format!("pn-{}", m.id)) });
+            .child({ let u = m.author.clone(); opens_profile(text(name_in(s, &m.author)).font(type_::TITLE).color(name_color(s, &m.author.id)).on_secondary_press(move |s: &mut State, p, _| open_user_menu(s, &u, p)), &m.author, format!("pn-{}", m.id)) });
         if let Some(ic) = top_role_el(s, &m.author) { head = head.child(ic) }
         if let Some(ts) = m.ts { head = head.child(text(crate::clock::full(ts, now)).font(type_::LABEL).color(t.text_secondary.alpha(0.75))) }
         if m.delivery == Delivery::Pending { head = head.child(text("enviando…").font(type_::LABEL).color(t.text_secondary)) }
@@ -1055,7 +1052,7 @@ fn message(s: &State, m: &Msg, prev: Option<&Msg>) -> El {
         line = line.fill(oklcha(0.82, 0.16, 90.0, 0.10))
             .child(el().pin(Some(0.0), Some(0.0), None, Some(0.0)).w(4.0).fill(oklch(0.85, 0.19, 90.0)));
     }
-    if over { line = line.child(el().pin(None, Some(0.0), Some(16.0), None).child(compose::reaction_bar(s, &m.id))) }
+    if over { line = line.child(el().pin(None, Some(0.0), Some(16.0), None).child(compose::reaction_bar(&m.id))) }
     out.child(line)
 }
 
@@ -1105,8 +1102,10 @@ fn message_list(s: &State) -> El {
     let composer_room = if typing_notice(s).is_some() { 94.0 } else { 72.0 };
     let content = col().w_full().child(rows).child(el().w_full().h(composer_room));
     // A fresh scroll area per channel, so each one opens at its newest message.
+    // The thumb floats over the viewport's right edge, in the margin beside the message box.
+    let viewport = col().scroll(ScrollSpec { stick_bottom: true }).grow(1.0).min_h(0.0).child(content);
     col().grow(1.0).min_h(0.0).child(top)
-        .child(col().key(format!("scroll-{cid}")).scroll(ScrollSpec { stick_bottom: true }).grow(1.0).min_h(0.0).child(content))
+        .child(thumb::attach(&s.thumb, "msgs-area", &format!("scroll-{cid}"), viewport))
 }
 
 fn status_color(status: &str) -> Color {

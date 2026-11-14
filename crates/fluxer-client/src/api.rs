@@ -274,10 +274,11 @@ pub fn animated_image_url(url: &str, width: u32) -> String {
     format!("{url}{sep}width={width}&animated=true")
 }
 
-/// A server's banner; an `a_` hash is animated.
+/// A server's banner, moving when its hash starts with `a_`. The proxy only animates a request that
+/// names the whole hash, `a_` included (the still frame is asked for without it), as the web client does.
 pub fn banner_url(media: &str, guild_id: &str, hash: &str, size: u32) -> String {
-    let animated = if hash.starts_with("a_") { "&animated=true" } else { "" };
-    format!("{media}/banners/{guild_id}/{}.webp?size={size}{animated}", still_hash(hash))
+    if hash.starts_with("a_") { format!("{media}/banners/{guild_id}/{hash}.webp?size={size}&animated=true") }
+    else { format!("{media}/banners/{guild_id}/{hash}.webp?size={size}") }
 }
 
 /// The still first frame of a server banner.
@@ -472,6 +473,13 @@ mod upload_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_animated_banner_is_asked_for_with_its_whole_hash_and_a_still_one_is_not() {
+        assert_eq!(super::banner_url("https://m", "g", "a_abc", 480), "https://m/banners/g/a_abc.webp?size=480&animated=true");
+        assert_eq!(super::banner_url("https://m", "g", "abc", 480), "https://m/banners/g/abc.webp?size=480");
+        assert_eq!(super::banner_still_url("https://m", "g", "a_abc", 640), "https://m/banners/g/abc.png?size=640", "the still frame goes without the a_");
+    }
+
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;

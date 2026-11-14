@@ -114,6 +114,8 @@ pub const ATTACHMENT_FETCH_WIDTH: u32 = 720;
 /// GIFs draw at most 300 pt wide; asked a little above that: every frame is downloaded and decoded, so bigger is slower.
 pub const GIF_FETCH_WIDTH: u32 = 360;
 pub const BANNER_SIZE: u32 = 640;
+/// The moving banner is asked for narrower (the size the web client asks): decoding costs by the pixel.
+pub const BANNER_ANIM_SIZE: u32 = 480;
 
 /// What is open: a guild channel, or a DM when `guild` is None.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -473,7 +475,7 @@ impl Chat {
             if let Some(h) = g.banner.as_deref() {
                 // The still is always asked for: it shows first, and stands in when the animation is too big.
                 urls.push(fluxer_client::api::banner_still_url(media, &g.id, h, BANNER_SIZE));
-                if animate.is_some() { urls.push(fluxer_client::api::banner_url(media, &g.id, h, BANNER_SIZE)) }
+                if animate.is_some() && h.starts_with("a_") { urls.push(fluxer_client::api::banner_url(media, &g.id, h, BANNER_ANIM_SIZE)) }
             }
         }
         for people in self.voice.values() {
