@@ -36,7 +36,22 @@ pub fn save(s: &Saved) -> std::io::Result<()> {
     save_to(&file().ok_or(std::io::ErrorKind::NotFound)?, s)
 }
 
-pub fn clear() { if let Some(f) = file() { let _ = std::fs::remove_file(f); } }
+/// Where the user left off: (guild id or None for DMs, channel id).
+pub fn load_nav() -> Option<(Option<String>, String)> {
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(nav_file()?).ok()?).ok()?;
+    Some((v.get("guild").and_then(|g| g.as_str()).map(String::from), v.get("channel")?.as_str()?.to_string()))
+}
+
+pub fn save_nav(pos: &(Option<String>, String)) {
+    let Some(f) = nav_file() else { return };
+    let _ = std::fs::create_dir_all(f.parent().unwrap_or(&f));
+    let _ = std::fs::write(f, serde_json::json!({ "guild": pos.0, "channel": pos.1 }).to_string());
+}
+
+fn nav_file() -> Option<PathBuf> { Some(dir()?.join("nav.json")) }
+
+pub fn clear() {
+    if let Some(f) = nav_file() { let _ = std::fs::remove_file(f); } if let Some(f) = file() { let _ = std::fs::remove_file(f); } }
 
 pub fn load_from(path: &std::path::Path) -> Option<Saved> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()

@@ -3,13 +3,20 @@
 //! `-- --snap out.png [--scene login|code|ip]` renders it headless.
 
 mod auth;
+mod audio;
+mod call;
 mod clock;
 mod gateway;
 mod model;
 mod net;
+mod picker;
+mod prefs;
 mod richtext;
 mod roster;
+mod sounds;
 mod store;
+mod upload;
+mod voice;
 mod ui;
 
 use fluxer_client::api::{Api, Embed, Message, Quoted, User};
@@ -26,7 +33,42 @@ pub enum Screen { Login, Main }
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Status { Demo, Connecting, Connected, Reconnecting, Failed }
 
+/// The right-click menu of a person: who, and the key of the element it opens beside.
+pub struct Ctx { pub user: User, pub x: f32, pub y: f32 }
+
+/// The profile card of a person, opened beside the element (by key) that was clicked; `at` is
+/// where the pointer was, for a mention with no element of its own to anchor beside.
+pub struct Prof { pub user: User, pub anchor: String, pub at: Option<(f32, f32)> }
+
 pub struct State {
+    pub rail_hover: Option<String>,
+    pub settings_open: bool,
+    /// Profile form of the settings dialog.
+    pub prof: [TextEdit; 4],
+    pub pf: ui::settings::Form,
+    pub picker: picker::Picker,
+    pub prefs: prefs::Prefs,
+    /// Message box popups: the "+" menu and its Customize submenu.
+    pub plus_open: bool,
+    /// The message the pointer is over (its reaction bar shows), and the one whose emoji picker is open.
+    pub msg_hover: Option<String>,
+    pub react_picker: Option<String>,
+    /// The message jumped to from a quote click (id, until when its blue flash lasts).
+    pub highlighted: Option<(String, std::time::Instant)>,
+    /// Where the pointer last was, tracked live so a mention can open its card beside it.
+    pub pointer: rune::Live<[f32; 2]>,
+    /// The video attachment playing inline, if any (attachment id, player).
+    pub video: Option<(String, rune::Player)>,
+    pub customize_open: bool,
+    /// A short note about something that failed (a send), shown above the message box.
+    pub notice: Option<String>,
+    pub ctx: Option<Ctx>,
+    pub profile: Option<Prof>,
+    /// Profiles fetched so far, by `net::profile_key`.
+    pub profiles: std::collections::HashMap<String, fluxer_client::api::Profile>,
+    /// Progress (0..1) of the login card's entrance, driven by the poll clock.
+    pub intro: f32,
+    intro_t0: Option<f64>,
     pub screen: Screen,
     pub auth: auth::Auth,
     pub session: Option<store::Saved>,
@@ -40,17 +82,20 @@ pub struct State {
     pub subscribed: Option<(String, String)>,
     pub synced_guilds: std::collections::HashSet<String>,
     pub show_members: bool,
+    pub call: call::Call,
+    /// The window has the focus; GIFs and the banner only move while it does.
+    pub focused: bool,
 }
 
 fn demo_chat() -> Chat {
     let people: Vec<User> = ["ana", "bruno", "carla", "dudu"].iter().enumerate()
-        .map(|(i, n)| User { id: (i + 1).to_string(), username: (*n).into(), global_name: None, avatar: None }).collect();
+        .map(|(i, n)| User { id: (i + 1).to_string(), username: (*n).into(), global_name: None, avatar: None, discriminator: None }).collect();
     let mut c = Chat::default();
-    c.me = Some(User { id: "0".into(), username: "você".into(), global_name: None, avatar: None });
+    c.me = Some(User { id: "0".into(), username: "você".into(), global_name: None, avatar: None, discriminator: None });
     let chan = |i: usize, n: &str| Channel { id: format!("demo-{i}"), name: n.into(), category: Some(if i < 2 { "Texto" } else { "Comunidade" }.into()),
         new: i == 1, last_read: Some("9990".into()), ..Channel::default() };
     c.guilds = vec![Guild {
-        id: "demo".into(), name: "Demo".into(), icon: None,
+        id: "demo".into(), name: "Demo".into(), icon: None, banner: None, owner_id: None, voice: vec![], stickers: vec![],
         channels: ["geral", "dev", "música", "off-topic"].iter().enumerate().map(|(i, n)| chan(i, n)).collect(),
     }];
     c.dms = vec![Channel { id: "demo-dm".into(), name: "ana".into(), unread: 2, peer: Some(people[0].clone()), ..Channel::default() }];
@@ -71,7 +116,7 @@ fn demo_chat() -> Chat {
         let mut m = Msg::local(i.to_string(), people[i / 3 % 4].clone(),
             format!("Mensagem #{i} — **olá**, teste de _acentuação_: ção, ñ, 日本語 e emoji 🙂 com `código`"), Delivery::Sent);
         m.ts = Some(base + (i / 3) as i64 * 120 * 60_000 + (i % 3) as i64 * 2 * 60_000);
-        if i % 7 == 3 { m.reply = Some(Quoted { author: people[(i + 1) % 4].clone(), content: "mensagem original citada".into(), has_attachments: false }) }
+        if i % 7 == 3 { m.reply = Some(Quoted { id: Some(i.to_string()), author: people[(i + 1) % 4].clone(), content: "mensagem original citada".into(), has_attachments: false }) }
         if i % 11 == 5 { m.embeds = vec![Embed { url: Some("https://exemplo.com".into()), title: Some("Título do link".into()),
             description: Some("Descrição curta do conteúdo vinculado.".into()), provider: Some("Exemplo".into()), ..Embed::default() }] }
         m
@@ -83,8 +128,10 @@ fn demo_chat() -> Chat {
 impl Default for State {
     fn default() -> Self {
         State {
-            screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
-            chat: demo_chat(), net: net::Net::default(), draft: TextEdit::new(""), gateway: None, subscribed: None, synced_guilds: Default::default(), show_members: true,
+            rail_hover: None, settings_open: false, pf: Default::default(), prof: [TextEdit::new(""), TextEdit::new(""), TextEdit::new(""), TextEdit::new("")],
+            picker: Default::default(), prefs: prefs::load(), plus_open: false, msg_hover: None, react_picker: None, highlighted: None, pointer: rune::Live::new([0.0, 0.0]), video: None, customize_open: false, notice: None,
+            ctx: None, profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
+            intro: 0.0, intro_t0: None, chat: demo_chat(), net: net::Net::default(), draft: TextEdit::new(""), gateway: None, subscribed: None, synced_guilds: Default::default(), show_members: true, call: Default::default(), focused: true,
         }
     }
 }
@@ -111,6 +158,9 @@ fn apply(s: &mut State, e: Event) -> bool {
                 s.subscribed = None;
                 s.synced_guilds.clear();
                 s.chat.apply_ready(&d);
+                if let Some(u) = &s.chat.me { s.call.set_me(&u.id) }
+                let api = s.net.api().cloned();
+                s.picker.prefetch(&api);
                 true
             }
             "RESUMED" => { s.status = Status::Connected; true }
@@ -125,6 +175,17 @@ fn apply(s: &mut State, e: Event) -> bool {
                 }
                 _ => false,
             },
+            "VOICE_STATE_UPDATE" => {
+                let uid = str_at(&d, &["user_id"]).unwrap_or("").to_string();
+                let here = |c: &Chat, ch: &Option<String>| ch.as_ref().is_some_and(|ch| c.voice.get(ch).is_some_and(|v| v.iter().any(|p| p.user_id == uid)));
+                let channel = s.call.channel_id.clone();
+                let was_here = here(&s.chat, &channel);
+                if Some(uid.as_str()) == s.chat.me.as_ref().map(|u| u.id.as_str()) { s.call.on_my_state(&d) }
+                s.chat.on_voice_state(&d);
+                if Some(uid.as_str()) != s.chat.me.as_ref().map(|u| u.id.as_str()) { s.call.on_other_presence(was_here, here(&s.chat, &channel)) }
+                true
+            }
+            "VOICE_SERVER_UPDATE" => { s.call.on_server_update(&d); true }
             "PRESENCE_UPDATE" => { s.chat.roster.on_presence(&d); true }
             "GUILD_MEMBER_LIST_UPDATE" => { s.chat.roster.on_member_list(&d); true }
             "MESSAGE_ACK" => match (str_at(&d, &["channel_id"]), str_at(&d, &["message_id"])) {
@@ -133,6 +194,17 @@ fn apply(s: &mut State, e: Event) -> bool {
             },
             "MESSAGE_CREATE" => Message::from_json(&d).map(|m| s.chat.on_message(m)).is_some(),
             "MESSAGE_UPDATE" => Message::from_json(&d).is_some_and(|m| s.chat.on_message_updated(m)),
+            "MESSAGE_REACTION_ADD" | "MESSAGE_REACTION_REMOVE" => {
+                let me = s.chat.me.as_ref().map(|u| u.id.as_str());
+                match (str_at(&d, &["channel_id"]), str_at(&d, &["message_id"]), d.get("emoji")) {
+                    (Some(c), Some(m), Some(e)) => s.chat.on_reaction(c, m, e, str_at(&d, &["user_id"]) == me && me.is_some(), t == "MESSAGE_REACTION_ADD"),
+                    _ => false,
+                }
+            }
+            "MESSAGE_REACTION_REMOVE_ALL" | "MESSAGE_REACTION_REMOVE_EMOJI" => match (str_at(&d, &["channel_id"]), str_at(&d, &["message_id"])) {
+                (Some(c), Some(m)) => s.chat.on_reactions_cleared(c, m, d.get("emoji")),
+                _ => false,
+            },
             "MESSAGE_DELETE" => match (str_at(&d, &["channel_id"]), str_at(&d, &["id"])) {
                 (Some(c), Some(id)) => s.chat.on_message_deleted(c, id),
                 _ => false,
@@ -146,6 +218,8 @@ fn apply(s: &mut State, e: Event) -> bool {
 fn setup(s: &mut State, wake: Waker) {
     s.auth.set_waker(wake.clone());
     s.net.set_waker(wake.clone());
+    s.call.start(wake.clone());
+    s.picker.set_waker(wake.clone());
     s.wake = Some(wake.clone());
     if std::env::var_os("FLUXER_DEMO").is_some() { return }
     match store::load() {
@@ -167,7 +241,7 @@ fn api_for(saved: &store::Saved) -> Arc<Api> {
 fn start_session(s: &mut State, saved: store::Saved, wake: Waker) {
     s.screen = Screen::Main;
     s.status = Status::Connecting;
-    s.chat = Chat { media: saved.media.clone(), ..Chat::default() };
+    s.chat = Chat { media: saved.media.clone(), restore: store::load_nav(), ..Chat::default() };
     s.net.set_api(Some(api_for(&saved)));
     s.net.refresh_endpoints(&saved.instance);
     s.gateway = Some(gateway::start(gateway::Settings { gateway: saved.gateway.clone(), token: saved.token.clone() }, wake));
@@ -176,6 +250,7 @@ fn start_session(s: &mut State, saved: store::Saved, wake: Waker) {
 
 /// Back to the login screen, keeping the instance the user typed.
 pub fn sign_out(s: &mut State, reason: Option<&str>) {
+    s.call.leave(s.gateway.as_ref());
     store::clear();
     s.gateway = None;
     s.session = None;
@@ -250,6 +325,20 @@ fn on_net(s: &mut State, d: net::Done) -> bool {
             true
         }
         net::Done::Endpoints(Err(e)) => { eprintln!("fluxer: endpoint refresh failed: {e}"); false }
+        net::Done::Posted(Err(e)) => { s.notice = Some(format!("Não foi possível enviar: {e}")); true }
+        net::Done::Posted(Ok(())) => false,
+        net::Done::Reacted(Err(e)) => { s.notice = Some(format!("Não foi possível reagir: {e}")); true }
+        net::Done::Reacted(Ok(())) => false,
+        net::Done::ProfileSaved { guild, res } => { ui::settings::on_saved(s, guild, res); true }
+        net::Done::Profile { key, res: Ok(p) } => {
+            if let (Some(media), Some(h)) = (s.chat.media.clone(), p.banner.as_deref()) {
+                if let Some(uid) = key.split('@').next() { s.net.want_image_first(&fluxer_client::api::banner_still_url(&media, uid, h, 600)) }
+            }
+            s.profiles.insert(key.clone(), p);
+            ui::settings::on_profile_loaded(s, &key);
+            true
+        }
+        net::Done::Profile { res: Err(e), .. } => { eprintln!("fluxer: profile failed: {e}"); false }
         net::Done::Image { .. } => false,
     }
 }
@@ -264,7 +353,7 @@ fn reconcile(s: &mut State) {
             s.net.history(&cid, None);
         }
     }
-    for url in s.chat.wanted_images(80) { s.net.want_image(&url) }
+    for url in s.chat.wanted_images(80, !s.focused) { s.net.want_image(&url) }
     subscribe_members(s);
 }
 
@@ -286,14 +375,28 @@ fn subscribe_members(s: &mut State) {
     }
 }
 
-fn poll(s: &mut State, _t: f64, _tx: &mut Tx) -> bool {
+fn poll(s: &mut State, t: f64, _tx: &mut Tx) -> bool {
     let mut changed = false;
+    if s.intro < 1.0 {
+        let t0 = *s.intro_t0.get_or_insert(t);
+        s.intro = (((t - t0) / INTRO_SECS) as f32).clamp(0.0, 1.0);
+        changed = true;
+    }
+    // A jumped-to message's blue flash fades out on its own after its three seconds.
+    if s.highlighted.as_ref().is_some_and(|(_, until)| std::time::Instant::now() >= *until) {
+        s.highlighted = None;
+        changed = true;
+    }
+    // While a clip plays, the frame re-draws so its progress bar moves.
+    if s.video.as_ref().is_some_and(|(_, p)| p.is_playing()) { changed = true }
     for m in s.auth.drain() { on_auth(s, m); changed = true }
     let mut events = Vec::new();
     if let Some(g) = &s.gateway { events.extend(g.inbox.try_iter()) }
     changed |= events.into_iter().fold(false, |c, e| apply(s, e) | c);
     let images_before = s.net.busy_with_images();
     for d in s.net.drain() { changed |= on_net(s, d) }
+    changed |= s.call.poll(s.gateway.as_ref());
+    if s.picker.poll() { picker_images(s); changed = true }
     // A finished download changes what draws; so does a queue that just emptied.
     changed |= images_before || s.net.busy_with_images();
     if s.status == Status::Failed && s.session.is_some() {
@@ -304,16 +407,108 @@ fn poll(s: &mut State, _t: f64, _tx: &mut Tx) -> bool {
     changed
 }
 
+const INTRO_SECS: f64 = 0.8;
+
+/// Toggles the inline clip player of a video attachment: opens and plays, or closes.
+pub fn toggle_video(s: &mut State, id: &str, url: &str) {
+    if s.video.as_ref().is_some_and(|(v, _)| v == id) {
+        s.video = None;
+        return;
+    }
+    let p = rune::Player::url(url);
+    if let Some(w) = s.wake.clone() { p.set_waker(w) }
+    p.preload();
+    p.play();
+    s.video = Some((id.to_string(), p));
+}
+
+/// Pauses or resumes the open clip.
+pub fn toggle_video_play(s: &mut State) {
+    if let Some((_, p)) = &s.video {
+        if p.is_playing() { p.pause() } else { p.play() }
+    }
+}
+
+/// A quote click lands on the original message and flashes it blue for three seconds.
+pub fn jump_to(s: &mut State, tx: &mut rune::Tx, id: &str) {
+    s.highlighted = Some((id.to_string(), std::time::Instant::now() + std::time::Duration::from_secs(3)));
+    tx.scroll_center(format!("rows/{id}"));
+}
+
+/// Clicking a voice channel joins it (unless already in it) and shows the call's mosaic.
+pub fn join_voice(s: &mut State, channel: &str) {
+    let Some(guild) = s.chat.voice_channel(channel).map(|(g, _)| g.id.clone()) else { return };
+    s.call.join(s.gateway.as_ref(), &guild, channel);
+    if s.call.channel_id.as_deref() == Some(channel) {
+        s.call.view = true;
+        s.chat.voice_view = None;
+    }
+}
+
+pub fn watch_stream(s: &mut State, connection: &str, on: bool) { s.call.set_watching(s.gateway.as_ref(), connection, on) }
+
+pub fn leave_voice(s: &mut State) { s.call.leave(s.gateway.as_ref()) }
+pub fn toggle_mute(s: &mut State) { s.call.toggle_mute(s.gateway.as_ref()) }
+pub fn toggle_deafen(s: &mut State) { s.call.toggle_deafen(s.gateway.as_ref()) }
+
+pub fn set_focus(s: &mut State, focused: bool) {
+    s.focused = focused;
+    // Losing the focus needs the still frames; they were not asked for before.
+    if !focused { reconcile(s) }
+}
+
 pub fn submit(s: &mut State) { s.auth.submit(); }
 
+/// Remembers what is open so the next launch comes back to it.
+fn remember(s: &State) {
+    if s.session.is_some() && let Some(pos) = s.chat.position() { store::save_nav(&pos) }
+}
+
 pub fn open_guild(s: &mut State, g: Option<usize>) {
+    s.call.view = false;
     s.chat.open_guild(g);
     reconcile(s);
+    remember(s);
 }
 
 pub fn open_channel(s: &mut State, i: usize) {
+    s.call.view = false;
     s.chat.open_channel(i);
     reconcile(s);
+    remember(s);
+}
+
+pub fn open_voice_chat(s: &mut State, i: usize) {
+    s.call.view = false;
+    s.chat.open_voice_chat(i);
+    reconcile(s);
+}
+
+/// Reacts to a message of the open channel with `emoji` (an `emoji_key`), or takes the reaction back
+/// when this account already used it. Shown at once; the server's echo changes nothing more.
+pub fn toggle_reaction(s: &mut State, message: &str, emoji: &str) {
+    let Some(cid) = s.chat.channel_id().map(String::from) else { return };
+    let (name, id) = match emoji.split_once(':') { Some((n, i)) => (n, Some(i)), None => (emoji, None) };
+    let add = !s.chat.logs.get(&cid).and_then(|l| l.msgs.iter().find(|m| m.id == message))
+        .is_some_and(|m| m.reactions.iter().any(|r| r.key == emoji && r.me));
+    let json = serde_json::json!({ "name": name, "id": id });
+    s.chat.on_reaction(&cid, message, &json, true, add);
+    s.net.react(&cid, message, emoji, add);
+}
+
+/// Opens the profile card of `user` beside the element keyed `anchor`, and asks for the full profile.
+pub fn show_profile(s: &mut State, user: &User, anchor: &str) {
+    let guild = s.chat.nav.guild.and_then(|g| s.chat.guilds.get(g)).map(|g| g.id.clone());
+    let key = net::profile_key(&user.id, guild.as_deref());
+    s.net.profile(&user.id, guild.as_deref());
+    s.profile = Some(Prof { user: user.clone(), anchor: anchor.to_string(), at: None });
+}
+
+/// Opens the profile card of someone mentioned at `at` (window points), so it can sit to the
+/// right of the mention even though a mention has no element of its own to anchor beside.
+pub fn show_profile_at(s: &mut State, user: &User, anchor: &str, at: (f32, f32)) {
+    show_profile(s, user, anchor);
+    if let Some(p) = &mut s.profile { p.at = Some(at) }
 }
 
 pub fn load_older(s: &mut State) {
@@ -334,31 +529,230 @@ pub fn retry(s: &mut State, local: &str) {
 /// the gateway echo, whichever comes first. In demo mode it just appears.
 pub fn send(s: &mut State) {
     let body = s.draft.text.trim().to_string();
-    let Some(cid) = s.chat.channel_id().map(String::from) else { return };
     if body.is_empty() { return }
+    send_body(s, body);
+    s.draft = TextEdit::new("");
+}
+
+/// Sends `body` to the open channel: shown at once as pending, confirmed by the REST reply or the
+/// gateway echo, whichever comes first. In demo mode it just appears.
+pub fn send_body(s: &mut State, body: String) {
+    let Some(cid) = s.chat.channel_id().map(String::from) else { return };
+    s.notice = None;
     if s.net.has_api() {
         if let Some(local) = s.chat.push_pending(&cid, body.clone()) { s.net.send(&cid, &local, &body) }
     } else if let Some(local) = s.chat.push_pending(&cid, body) {
         s.chat.on_sent(&cid, &local, Ok(Message::plain(format!("sent-{local}"), cid.clone(), s.chat.logs[&cid].msgs.last().map(|m| m.body.clone()).unwrap_or_default(),
             s.chat.me.clone().expect("demo user"))));
     }
-    s.draft = TextEdit::new("");
+}
+
+pub fn send_sticker(s: &mut State, id: &str) {
+    let Some(cid) = s.chat.channel_id().map(String::from) else { return };
+    s.notice = None;
+    s.net.send_sticker(&cid, id);
+    s.picker.close();
+}
+
+/// A GIF or saved picture goes out as its link; the server turns it into the picture.
+pub fn send_link(s: &mut State, url: String) { send_body(s, url); s.picker.close() }
+
+pub fn insert_text(s: &mut State, text: &str) { s.draft = TextEdit::new(format!("{}{text}", s.draft.text)) }
+
+/// Asks the image cache for what the open picker tab shows.
+pub fn picker_images(s: &mut State) {
+    // Behind the message box's own pictures, the GIF home page loads ahead of time.
+    for url in s.picker.home_images() { s.net.want_image(&url) }
+    // What the open tab shows goes first.
+    for url in s.picker.wanted_images() { s.net.want_image_first(&url) }
+    // The moving versions follow once the still ones are on their way.
+    for url in s.picker.animated_images() { s.net.want_image(&url) }
+    for url in s.chat.wanted_images(0, false) { s.net.want_image(&url) }
+}
+
+/// A connected call in the demo server: two people, one sharing a screen, and the mosaic open.
+fn demo_call(s: &mut State) {
+    use crate::model::VState;
+    let mut vch = Channel::default();
+    vch.id = "demo-v0".into();
+    vch.name = "Geral".into();
+    if s.chat.guilds[0].voice.is_empty() { s.chat.guilds[0].voice.push(vch) }
+    let st = |id: &str, conn: &str, stream: bool| VState { user_id: id.into(), connection_id: conn.into(), self_stream: stream, ..Default::default() };
+    s.chat.voice.insert("demo-v0".into(), vec![st("0", "c0", false), st("1", "c1", true), st("2", "c2", false), st("3", "c3", false)]);
+    s.call.phase = call::Phase::Connected;
+    s.call.guild_id = Some("demo".into());
+    s.call.channel_id = Some("demo-v0".into());
+    s.call.view = true;
 }
 
 fn main() {
     rune::run(AppSpec::<State> {
         scenes: &[
-            ("login", |s| s.screen = Screen::Login),
+            ("login", |s| { s.intro = 1.0; s.screen = Screen::Login }),
             ("ip", |s| {
+                s.intro = 1.0;
                 s.screen = Screen::Login;
                 s.auth.step = auth::Step::Waiting { ticket: "t".into(), email: "voce@exemplo.com".into(), resend_ready_at: std::time::Instant::now() };
             }),
             ("code", |s| {
+                s.intro = 1.0;
                 s.screen = Screen::Login;
                 s.auth.step = auth::Step::Code { ticket: "t".into() };
                 s.auth.error = Some("Código inválido.".into());
             }),
+            // The call's mosaic with a screen share, for looking at it without a server.
+            ("call", |s| { demo_call(s); }),
+            ("call-watch", |s| { demo_call(s); s.call.watching.push("demo:demo-v0:c1".into()); }),
             ("dm", |s| { s.chat.open_guild(None); }),
+            // The settings dialog, for looking at it without clicking (see `--scene settings`).
+            ("settings", |s| {
+                s.settings_open = true;
+                if let Some(me) = &mut s.chat.me {
+                    me.id = "1567191623270400000".into();
+                    me.username = "muniz".into();
+                    me.global_name = Some("Muniz".into());
+                    me.discriminator = Some("9205".into());
+                }
+                s.prof[0] = TextEdit::new("Muniz");
+                s.prof[3] = TextEdit::new("#4641D9");
+                s.pf.base = ["Muniz".into(), String::new(), String::new(), "#4641D9".into()];
+            }),
+            // The per-community profile dialog (see `--scene settings-guild`).
+            ("settings-guild", |s| {
+                s.settings_open = true;
+                if let Some(me) = &mut s.chat.me {
+                    me.id = "1567191623270400000".into();
+                    me.username = "muniz".into();
+                    me.global_name = Some("Muniz".into());
+                    me.discriminator = Some("9205".into());
+                }
+                s.pf.kind = Some(0);
+                s.prof[0] = TextEdit::new("Muniz");
+                s.prof[2] = TextEdit::new("Doc, I'm from the future.");
+                s.prof[3] = TextEdit::new("#4641D9");
+                s.pf.base = ["Muniz".into(), String::new(), "Doc, I'm from the future.".into(), "#4641D9".into()];
+            }),
+            // Embed + video + role icon proofs (see `--scene extras`).
+            ("extras", |s| {
+                use fluxer_client::api::User as U;
+                let now = crate::clock::now_ms();
+                let ana = U { id: "2".into(), username: "ana".into(), global_name: None, avatar: None, discriminator: None };
+                s.chat.roster.remember(&ana);
+                s.chat.roster.roles.insert("r1".into(), "pai de santo".into());
+                s.chat.roster.role_icon.insert("r1".into(), (None, Some("⭐".into())));
+                s.chat.roster.set_roles("demo", "2", vec!["r1".into()]);
+                let mut msgs = Vec::new();
+                let mut m1 = Msg::local("e1".into(), ana.clone(), "https://github.com/fluxerapp/fluxer".into(), Delivery::Sent);
+                m1.ts = Some(now - 30_000);
+                m1.embeds = vec![Embed { url: Some("https://github.com/fluxerapp/fluxer".into()),
+                    title: Some("GitHub - fluxerapp/fluxer: A free and open source instant messaging app".into()),
+                    description: Some("A free and open source instant messaging and VoIP chat app built for friends, groups, and communities.".into()),
+                    provider: Some("GitHub".into()), author: None, image: None, thumbnail: Some("https://example.com/thumb.png".into()),
+                    video: false, gif: false, image_size: None, color: Some(0x24292e) }];
+                msgs.push(m1);
+                let mut m2 = Msg::local("e2".into(), ana.clone(), "shows, primeira mensagem é do pai".into(), Delivery::Sent);
+                m2.ts = Some(now);
+                m2.attachments = vec![fluxer_client::api::Attachment { id: "vid1".into(), filename: "10_segundos_de_CHUPA_CORINTHIANS.mp4".into(),
+                    content_type: Some("video/mp4".into()), url: Some("https://example.com/clip.mp4".into()), width: Some(1280), height: Some(720), size: 565_000 }];
+                msgs.push(m2);
+                s.chat.logs.insert("demo-0".into(), Log { msgs, loaded: true, loading: false, has_more: false });
+            }),
+            // The chat with nobody typing, for checking the message box sits right under the
+            // last message (see `--scene quiet`).
+            ("quiet", |s| {
+                s.chat.roster.stop_typing("demo-0", "2");
+                s.chat.roster.stop_typing("demo-0", "3");
+            }),
+            // A far-off reply target, for checking the jump scrolls (see `--scene farjump`).
+            ("farjump", |s| {
+                let now = crate::clock::now_ms();
+                let mut msgs = vec![Msg::local("old".into(),
+                    fluxer_client::api::User { id: "2".into(), username: "ana".into(), global_name: None, avatar: None, discriminator: None },
+                    "mensagem original bem antiga".into(), Delivery::Sent)];
+                msgs[0].ts = Some(now - 300_000);
+                for i in 1..298 {
+                    let mut m = Msg::local(format!("x{i}"),
+                        fluxer_client::api::User { id: "3".into(), username: "bruno".into(), global_name: None, avatar: None, discriminator: None },
+                        format!("filler {i}"), Delivery::Sent);
+                    m.ts = Some(now - 297_000 + i * 1000);
+                    msgs.push(m);
+                }
+                let mut last = Msg::local("new".into(),
+                    fluxer_client::api::User { id: "3".into(), username: "bruno".into(), global_name: None, avatar: None, discriminator: None },
+                    "Respondendo à antiga".into(), Delivery::Sent);
+                last.ts = Some(now);
+                last.reply = Some(Quoted { id: Some("old".into()),
+                    author: fluxer_client::api::User { id: "2".into(), username: "ana".into(), global_name: None, avatar: None, discriminator: None },
+                    content: "mensagem original bem antiga".into(), has_attachments: false });
+                msgs.push(last);
+                s.chat.logs.insert("demo-0".into(), Log { msgs, loaded: true, loading: false, has_more: false });
+            }),
+            // A long bio with no spaces, for checking the line breaking (see `--scene settings-longbio`).
+            ("settings-longbio", |s| {
+                s.settings_open = true;
+                if let Some(me) = &mut s.chat.me {
+                    me.id = "1567191623270400000".into();
+                    me.username = "muniz".into();
+                    me.global_name = Some("Muniz".into());
+                    me.discriminator = Some("9205".into());
+                }
+                s.pf.kind = Some(0);
+                let bio = "a".repeat(131);
+                s.prof[0] = TextEdit::new("Muniz");
+                s.prof[2] = TextEdit::new(bio.clone());
+                s.prof[3] = TextEdit::new("#4641D9");
+                s.pf.base = ["Muniz".into(), String::new(), bio, "#4641D9".into()];
+            }),
+            // The colour picker open (see `--scene settings-picker`).
+            ("settings-picker", |s| {
+                s.settings_open = true;
+                if let Some(me) = &mut s.chat.me {
+                    me.id = "1567191623270400000".into();
+                    me.username = "muniz".into();
+                    me.global_name = Some("Muniz".into());
+                    me.discriminator = Some("9205".into());
+                }
+                s.prof[0] = TextEdit::new("Muniz");
+                s.prof[3] = TextEdit::new("#4641D9");
+                s.pf.base = ["Muniz".into(), String::new(), String::new(), "#4641D9".into()];
+                s.pf.color_open = true;
+            }),
+            // Mention / reply / welcome rendering (see `--scene mentions`).
+            ("mentions", |s| {
+                use fluxer_client::api::User as U;
+                let now = crate::clock::now_ms();
+                let lion = U { id: "1".into(), username: "lion".into(), global_name: None, avatar: None, discriminator: None };
+                let namorada = U { id: "2".into(), username: "namorada".into(), global_name: None, avatar: None, discriminator: None };
+                let fluxer = U { id: "sys".into(), username: "fluxer".into(), global_name: Some("Fluxer".into()), avatar: None, discriminator: None };
+                s.chat.me = Some(lion.clone());
+                s.chat.roster.remember(&lion);
+                s.chat.roster.remember(&namorada);
+                s.chat.roster.set_nick("demo", "2", Some("Namorada do Ronaldinho"));
+                let mut mk = |id: &str, a: U, body: &str, ts: i64| {
+                    let mut m = Msg::local(id.into(), a, body.into(), Delivery::Sent);
+                    m.ts = Some(ts);
+                    m
+                };
+                let mut msgs = vec![
+                    mk("m1", fluxer, "Welcome, Lion!", now - 50_000),
+                    mk("m2", namorada.clone(), "@everyone", now - 40_000),
+                    mk("m3", lion.clone(), "Eu só consigo falar, não consigo ouvir", now - 30_000),
+                ];
+                let mut r = mk("m4", lion.clone(), "<@2> oi", now - 20_000);
+                r.reply = Some(Quoted { id: Some("m3".into()), author: lion.clone(), content: "Eu só consigo falar, não consigo ouvir".into(), has_attachments: false });
+                r.mentions = vec![namorada.clone()];
+                msgs.push(r);
+                let mut ping = mk("m5", namorada.clone(), "<@1> viu?", now - 10_000);
+                ping.mentions = vec![lion.clone()];
+                msgs.push(ping);
+                s.chat.logs.insert("demo-0".into(), Log { msgs, loaded: true, loading: false, has_more: false });
+                // Someone in the voice channel, for the rail's call badge.
+                let mut vch = Channel::default();
+                vch.id = "demo-v0".into();
+                vch.name = "Geral".into();
+                s.chat.guilds[0].voice.push(vch);
+                s.chat.voice.insert("demo-v0".into(), vec![crate::model::VState { user_id: "2".into(), self_mute: false, self_deaf: false, mute: false, deaf: false, ..Default::default() }]);
+            }),
         ],
         setup: Some(setup),
         poll: Some(poll),
@@ -597,7 +991,35 @@ mod tests {
     }
 
     #[test]
+    fn the_call_mosaic_offers_a_stream_and_watching_it_is_tracked() {
+        let env = Env { system_dark: true, scale: 2.0 };
+        let mut rt = Runtime::new(State::default(), ui::view, (1200.0, 800.0), env);
+        rt.update(|s, _| demo_call(s));
+        for _ in 0..5 { rt.frame(1.0 / 60.0); }
+        assert!(rt.find("ms-watch-c1").is_some(), "a stream is offered, not auto-played");
+        assert!(rt.find("mt-2").is_some() && rt.find("mt-3").is_some(), "everyone has a tile");
+        assert!(rt.find("composer").is_none(), "the mosaic replaces the text chat");
+        rt.update(|s, _| watch_stream(s, "c1", true));
+        for _ in 0..5 { rt.frame(1.0 / 60.0); }
+        assert!(rt.find("ms-stop-c1").is_some() && rt.find("ms-watch-c1").is_none());
+        assert_eq!(rt.state.call.watching, vec!["demo:demo-v0:c1".to_string()]);
+        rt.update(|s, _| watch_stream(s, "c1", false));
+        assert!(rt.state.call.watching.is_empty());
+    }
+
+    #[test]
     fn json_helpers() {
         assert_eq!(str_at(&json!({"a": {"b": "c"}}), &["a", "b"]), Some("c"));
+    }
+
+    #[test]
+    fn a_jump_flash_fades_after_three_seconds() {
+        let mut s = State::default();
+        s.highlighted = Some(("m3".into(), Instant::now() - std::time::Duration::from_secs(1)));
+        poll(&mut s, 0.0, &mut rune::Tx::default());
+        assert!(s.highlighted.is_none(), "an expired flash clears on its own");
+        s.highlighted = Some(("m3".into(), Instant::now() + std::time::Duration::from_secs(3)));
+        poll(&mut s, 0.0, &mut rune::Tx::default());
+        assert!(s.highlighted.is_some(), "a fresh flash survives");
     }
 }

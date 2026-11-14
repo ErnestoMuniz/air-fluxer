@@ -1,7 +1,7 @@
 //! Chat data: guilds, DMs, channels and per-channel message logs, filled from the gateway's READY
 //! and dispatches and from REST history. No I/O here, so all of it is unit-testable.
 
-use fluxer_client::api::{Attachment, Embed, Message, Quoted, User, snowflake_cmp};
+use fluxer_client::api::{Reaction, Attachment, Embed, Message, Quoted, User, snowflake_cmp};
 use crate::roster::Roster;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -24,18 +24,19 @@ pub struct Msg {
     pub reply: Option<Quoted>,
     pub mentions: Vec<User>,
     pub embeds: Vec<Embed>,
+    pub reactions: Vec<Reaction>,
 }
 
 impl Msg {
     pub fn local(id: String, author: User, body: String, delivery: Delivery) -> Msg {
-        Msg { id, author, body, attachments: vec![], delivery, kind: 0, ts: None, edited: false, reply: None, mentions: vec![], embeds: vec![] }
+        Msg { id, author, body, attachments: vec![], delivery, kind: 0, ts: None, edited: false, reply: None, mentions: vec![], embeds: vec![], reactions: vec![] }
     }
 }
 
 impl From<Message> for Msg {
     fn from(m: Message) -> Msg {
         Msg { id: m.id, author: m.author, body: m.content, attachments: m.attachments, delivery: Delivery::Sent,
-            kind: m.kind, ts: m.timestamp, edited: m.edited, reply: m.reply, mentions: m.mentions, embeds: m.embeds }
+            kind: m.kind, ts: m.timestamp, edited: m.edited, reply: m.reply, mentions: m.mentions, embeds: m.embeds, reactions: m.reactions }
     }
 }
 
@@ -61,7 +62,13 @@ pub struct Guild {
     pub id: String,
     pub name: String,
     pub icon: Option<String>,
+    pub banner: Option<String>,
+    pub owner_id: Option<String>,
     pub channels: Vec<Channel>,
+    /// Voice channels, in the server's order (text navigation never lands on them).
+    pub voice: Vec<Channel>,
+    /// The server's stickers: (id, name).
+    pub stickers: Vec<(String, String)>,
 }
 
 #[derive(Default)]
@@ -73,10 +80,40 @@ pub struct Log {
     pub has_more: bool,
 }
 
+/// The URL an attachment picture is fetched from (the UI asks for the same one).
+pub fn attachment_fetch_url(url: &str, gif: bool) -> String {
+    if gif { fluxer_client::api::animated_image_url(url, GIF_FETCH_WIDTH) } else { fluxer_client::api::attachment_image_url(url, ATTACHMENT_FETCH_WIDTH) }
+}
+
+pub fn embed_image_url(url: &str, gif: bool) -> String {
+    if gif { fluxer_client::api::animated_image_url(url, GIF_FETCH_WIDTH) } else { fluxer_client::api::attachment_image_url(url, EMBED_FETCH_WIDTH) }
+}
+
+/// Someone connected to a voice channel.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VState {
+    pub user_id: String, pub self_mute: bool, pub self_deaf: bool, pub mute: bool, pub deaf: bool,
+    pub connection_id: String,
+    /// Sharing the screen / the camera is on.
+    pub self_stream: bool, pub self_video: bool,
+    /// Stream keys this connection is watching.
+    pub viewing: Vec<String>,
+}
+
+impl VState {
+    pub fn muted(&self) -> bool { self.self_mute || self.mute || self.self_deaf || self.deaf }
+    pub fn deafened(&self) -> bool { self.self_deaf || self.deaf }
+}
+
+pub fn sticker_url(media: &str, id: &str) -> String { format!("{media}/stickers/{id}.webp?size=160") }
+
 pub const PAGE: usize = 50;
 /// Width asked from the media proxy for attachment images (drawn at most 360 pt wide, so 2x).
 pub const EMBED_FETCH_WIDTH: u32 = 480;
 pub const ATTACHMENT_FETCH_WIDTH: u32 = 720;
+/// GIFs draw at most 300 pt wide; asked a little above that: every frame is downloaded and decoded, so bigger is slower.
+pub const GIF_FETCH_WIDTH: u32 = 360;
+pub const BANNER_SIZE: u32 = 640;
 
 /// What is open: a guild channel, or a DM when `guild` is None.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -92,6 +129,12 @@ pub struct Chat {
     pub media: Option<String>,
     pub next_local: u64,
     pub roster: Roster,
+    /// Where to land on the next READY: (guild id or None for DMs, channel id). Set from disk at start.
+    pub restore: Option<(Option<String>, String)>,
+    /// Who is in each voice channel (channel id → people).
+    pub voice: HashMap<String, Vec<VState>>,
+    /// Index into the open server's voice channels whose text chat is shown instead of a text channel.
+    pub voice_view: Option<usize>,
 }
 
 fn text<'a>(v: &'a Value, k: &str) -> Option<&'a str> { v.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()) }
@@ -103,19 +146,27 @@ impl Chat {
             None => &self.dms,
         }
     }
-    pub fn channel(&self) -> Option<&Channel> { self.channels().get(self.nav.channel) }
+    pub fn channel(&self) -> Option<&Channel> {
+        if let Some(v) = self.voice_view && let Some(c) = self.nav.guild.and_then(|g| self.guilds.get(g)).and_then(|g| g.voice.get(v)) { return Some(c) }
+        self.channels().get(self.nav.channel)
+    }
     pub fn channel_id(&self) -> Option<&str> { self.channel().map(|c| c.id.as_str()) }
     pub fn log(&self) -> Option<&Log> { self.logs.get(self.channel_id()?) }
 
     pub fn open_guild(&mut self, guild: Option<usize>) {
         self.nav = Nav { guild, channel: 0 };
+        self.voice_view = None;
         self.mark_read();
     }
 
     pub fn open_channel(&mut self, i: usize) {
         self.nav.channel = i;
+        self.voice_view = None;
         self.mark_read();
     }
+
+    /// Shows the text chat of the open server's `i`-th voice channel.
+    pub fn open_voice_chat(&mut self, i: usize) { self.voice_view = Some(i) }
 
     fn mark_read(&mut self) {
         let (g, c) = (self.nav.guild, self.nav.channel);
@@ -140,7 +191,14 @@ impl Chat {
     }
 
     /// Guilds, text channels and DMs from READY.
+    /// Ids of what is open now, to save and to come back to.
+    pub fn position(&self) -> Option<(Option<String>, String)> {
+        let ch = self.channel_id()?.to_string();
+        Some((self.nav.guild.and_then(|g| self.guilds.get(g)).map(|g| g.id.clone()), ch))
+    }
+
     pub fn apply_ready(&mut self, d: &Value) {
+        let want = self.restore.take().or_else(|| self.position());
         let users: HashMap<&str, &Value> = d.get("users").and_then(Value::as_array).into_iter().flatten()
             .filter_map(|u| Some((text(u, "id")?, u))).collect();
         self.me = d.get("user").and_then(User::from_json);
@@ -150,6 +208,7 @@ impl Chat {
         let reads: HashMap<String, (Option<String>, u32)> = d.get("read_states").and_then(Value::as_array).into_iter().flatten()
             .filter_map(|r| Some((text(r, "id")?.to_string(), (text(r, "last_message_id").map(String::from), r.get("mention_count").and_then(Value::as_u64).unwrap_or(0) as u32)))).collect();
 
+        let mut states: Vec<Value> = Vec::new();
         self.guilds = d.get("guilds").and_then(Value::as_array).into_iter().flatten().filter_map(|g| {
             let props = g.get("properties").unwrap_or(g);
             let all = g.get("channels").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -169,13 +228,26 @@ impl Chat {
                 })
                 .collect();
             chans.sort_by(|a, b| a.0.cmp(&b.0));
+            let mut voice: Vec<(i64, Channel)> = all.iter().filter(|c| c.get("type").and_then(Value::as_u64) == Some(2))
+                .filter_map(|c| Some((c.get("position").and_then(Value::as_i64).unwrap_or(0),
+                    Channel { id: text(c, "id")?.into(), name: text(c, "name")?.into(), ..Channel::default() }))).collect();
+            voice.sort_by_key(|v| v.0);
+            for vs in g.get("voice_states").and_then(Value::as_array).into_iter().flatten() { states.push(vs.clone()) }
             Some(Guild {
                 id: text(g, "id")?.into(),
                 name: text(props, "name").unwrap_or("Servidor").into(),
                 icon: text(props, "icon").map(String::from),
+                banner: text(props, "banner").map(String::from),
+                owner_id: text(props, "owner_id").map(String::from),
                 channels: chans.into_iter().map(|(_, c)| c).collect(),
+                voice: voice.into_iter().map(|(_, c)| c).collect(),
+                stickers: g.get("stickers").or_else(|| props.get("stickers")).and_then(Value::as_array).into_iter().flatten()
+                    .filter_map(|st| Some((text(st, "id")?.to_string(), text(st, "name").unwrap_or("").to_string()))).collect(),
             })
         }).collect();
+
+        self.voice.clear();
+        for st in &states { self.on_voice_state(st); }
 
         let user_of = |r: &Value| -> Option<User> {
             match r.as_str() {
@@ -208,7 +280,40 @@ impl Chat {
         self.dms = dms.into_iter().map(|(_, c)| c).collect();
 
         self.nav = Nav { guild: if self.guilds.is_empty() { None } else { Some(0) }, channel: 0 };
+        if let Some((gid, cid)) = want {
+            let found = match gid {
+                Some(gid) => self.guilds.iter().position(|g| g.id == gid)
+                    .and_then(|g| Some(Nav { guild: Some(g), channel: self.guilds[g].channels.iter().position(|c| c.id == cid)? })),
+                None => self.dms.iter().position(|c| c.id == cid).map(|c| Nav { guild: None, channel: c }),
+            };
+            if let Some(n) = found { self.nav = n; self.mark_read() }
+        }
         self.logs.clear();
+    }
+
+    /// `VOICE_STATE_UPDATE` (and the READY snapshot): someone joined, changed or left a voice channel.
+    pub fn on_voice_state(&mut self, d: &Value) -> bool {
+        let Some(uid) = text(d, "user_id") else { return false };
+        let before = self.voice.clone();
+        let target = text(d, "channel_id");
+        for (cid, people) in self.voice.iter_mut() { if Some(cid.as_str()) != target { people.retain(|p| p.user_id != uid) } }
+        self.voice.retain(|_, v| !v.is_empty());
+        if let Some(cid) = target {
+            let flag = |k: &str| d.get(k).and_then(Value::as_bool).unwrap_or(false);
+            let st = VState { user_id: uid.into(), self_mute: flag("self_mute"), self_deaf: flag("self_deaf"), mute: flag("mute"), deaf: flag("deaf"),
+                connection_id: text(d, "connection_id").unwrap_or_default().into(), self_stream: flag("self_stream"), self_video: flag("self_video"),
+                viewing: d.get("viewer_stream_keys").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(String::from).collect() };
+            let people = self.voice.entry(cid.to_string()).or_default();
+            match people.iter_mut().find(|p| p.user_id == uid) { Some(old) => *old = st, None => people.push(st) }
+            if let Some(u) = d.pointer("/member/user").and_then(User::from_json) { self.roster.remember(&u) }
+            if let (Some(g), Some(m)) = (text(d, "guild_id"), d.get("member")) { self.roster.set_nick(g, uid, m.get("nick").and_then(Value::as_str)) }
+        }
+        before != self.voice
+    }
+
+    /// The server (and its channel) a voice channel belongs to.
+    pub fn voice_channel(&self, id: &str) -> Option<(&Guild, &Channel)> {
+        self.guilds.iter().find_map(|g| g.voice.iter().find(|c| c.id == id).map(|c| (g, c)))
     }
 
     pub fn find_channel_mut(&mut self, id: &str) -> Option<&mut Channel> {
@@ -228,6 +333,7 @@ impl Chat {
 
     /// A message from the gateway.
     pub fn on_message(&mut self, m: Message) {
+        self.note_roles(std::slice::from_ref(&m));
         let cid = m.channel_id.clone();
         let mine = self.me.as_ref().is_some_and(|u| u.id == m.author.id);
         let open = self.channel_id() == Some(cid.as_str());
@@ -261,17 +367,68 @@ impl Chat {
     pub fn on_message_updated(&mut self, m: Message) -> bool {
         let Some(log) = self.logs.get_mut(&m.channel_id) else { return false };
         let Some(i) = log.msgs.iter().position(|x| x.id == m.id) else { return false };
+        let kept = std::mem::take(&mut log.msgs[i].reactions);
         log.msgs[i] = m.into();
+        // An edit does not always carry the reactions again; keep the ones we have.
+        if log.msgs[i].reactions.is_empty() { log.msgs[i].reactions = kept }
         true
     }
 
+    fn reacted(&mut self, channel: &str, message: &str) -> Option<&mut Vec<Reaction>> {
+        self.logs.get_mut(channel)?.msgs.iter_mut().find(|m| m.id == message).map(|m| &mut m.reactions)
+    }
+
+    /// Someone (`mine`: this account) added or took back a reaction. Applying it twice is harmless:
+    /// our own change is shown at once and its echo from the gateway arrives later.
+    pub fn on_reaction(&mut self, channel: &str, message: &str, emoji: &Value, mine: bool, add: bool) -> bool {
+        let Some((key, name, id)) = fluxer_client::api::emoji_key(emoji) else { return false };
+        let Some(list) = self.reacted(channel, message) else { return false };
+        let i = list.iter().position(|r| r.key == key);
+        match (i, add) {
+            (Some(i), true) => {
+                if mine && list[i].me { return false }
+                list[i].count += 1;
+                if mine { list[i].me = true }
+            }
+            (None, true) => list.push(Reaction { key, name, id, count: 1, me: mine }),
+            (Some(i), false) => {
+                if mine && !list[i].me { return false }
+                list[i].count = list[i].count.saturating_sub(1);
+                if mine { list[i].me = false }
+                if list[i].count == 0 { list.remove(i); }
+            }
+            (None, false) => return false,
+        }
+        true
+    }
+
+    /// Every reaction (`emoji` None) or every one using one emoji was cleared.
+    pub fn on_reactions_cleared(&mut self, channel: &str, message: &str, emoji: Option<&Value>) -> bool {
+        let key = emoji.and_then(fluxer_client::api::emoji_key).map(|k| k.0);
+        let Some(list) = self.reacted(channel, message) else { return false };
+        let before = list.len();
+        match key { Some(k) => list.retain(|r| r.key != k), None => list.clear() }
+        list.len() != before
+    }
+
     /// A page of history, merged with whatever live traffic already arrived.
+    /// Learns authors' roles from the `member` objects messages carry.
+    fn note_roles(&mut self, msgs: &[Message]) {
+        for m in msgs {
+            let Some(roles) = &m.member_roles else { continue };
+            let Some(g) = self.guilds.iter().find(|g| g.channels.iter().any(|c| c.id == m.channel_id)) else { continue };
+            self.roster.set_roles(&g.id, &m.author.id, roles.clone());
+            self.roster.set_nick(&g.id, &m.author.id, m.member_nick.as_deref());
+        }
+    }
+
     pub fn on_history(&mut self, channel_id: &str, msgs: Vec<Message>) {
         let log = self.logs.entry(channel_id.to_string()).or_default();
         log.loading = false;
         log.loaded = true;
         log.has_more = msgs.len() >= PAGE;
         for m in &msgs { self.roster.remember(&m.author) }
+        self.note_roles(&msgs);
         let log = self.logs.entry(channel_id.to_string()).or_default();
         for m in msgs { Self::insert(log, m.into()) }
     }
@@ -304,10 +461,19 @@ impl Chat {
 
     /// Every image the screen can show right now: guild icons, DM avatars, and avatars plus image
     /// attachments of the last `recent` messages of the open channel.
-    pub fn wanted_images(&self, recent: usize) -> Vec<String> {
+    pub fn wanted_images(&self, recent: usize, stills: bool) -> Vec<String> {
         let Some(media) = self.media.as_deref() else { return vec![] };
         let mut urls: Vec<String> = self.guilds.iter()
             .filter_map(|g| g.icon.as_deref().map(|h| fluxer_client::api::guild_icon_url(media, &g.id, h, 128))).collect();
+        if let Some(g) = self.nav.guild.and_then(|g| self.guilds.get(g)) {
+            urls.extend(g.banner.as_deref().map(|h| fluxer_client::api::banner_url(media, &g.id, h, BANNER_SIZE)));
+            if stills { urls.extend(g.banner.as_deref().map(|h| fluxer_client::api::banner_still_url(media, &g.id, h, BANNER_SIZE))) }
+        }
+        for people in self.voice.values() {
+            urls.extend(people.iter().filter_map(|p| fluxer_client::api::avatar_url(media, self.roster.users.get(&p.user_id)?, 128)));
+        }
+        urls.extend(self.roster.role_icon.iter().filter_map(|(id, (h, _))| h.as_deref().map(|h| fluxer_client::api::role_icon_url(media, id, h, 64))));
+        if let Some(g) = self.nav.guild.and_then(|g| self.guilds.get(g)) { urls.extend(g.stickers.iter().map(|(id, _)| sticker_url(media, id))) }
         urls.extend(self.dms.iter().filter_map(|c| fluxer_client::api::avatar_url(media, c.peer.as_ref()?, 128)));
         if let Some(rows) = self.nav.guild.and_then(|g| self.guilds.get(g)).and_then(|g| self.roster.lists.get(&g.id)) {
             urls.extend(rows.iter().filter_map(|r| match r { crate::roster::Row::Member { user, .. } => fluxer_client::api::avatar_url(media, user, 128), _ => None }));
@@ -316,10 +482,13 @@ impl Chat {
             for m in log.msgs.iter().rev().take(recent) {
                 urls.extend(fluxer_client::api::avatar_url(media, &m.author, 128));
                 urls.extend(m.reply.iter().filter_map(|r| fluxer_client::api::avatar_url(media, &r.author, 128)));
-                urls.extend(m.embeds.iter().filter_map(|e| e.image.as_deref())
-                    .map(|u| fluxer_client::api::attachment_image_url(u, EMBED_FETCH_WIDTH)));
-                urls.extend(m.attachments.iter().filter(|a| a.is_image()).filter_map(|a| a.url.as_deref())
-                    .map(|u| fluxer_client::api::attachment_image_url(u, ATTACHMENT_FETCH_WIDTH)));
+                urls.extend(m.embeds.iter().filter_map(|e| Some(embed_image_url(e.image.as_deref()?, e.gif))));
+                urls.extend(m.attachments.iter().filter(|a| a.is_image() || a.is_gif()).filter_map(|a| Some(attachment_fetch_url(a.url.as_deref()?, a.is_gif()))));
+                // While the window is not focused the GIFs stand still: their first frames are fetched for that.
+                if stills {
+                    urls.extend(m.attachments.iter().filter(|a| a.is_gif()).filter_map(|a| Some(attachment_fetch_url(a.url.as_deref()?, false))));
+                    urls.extend(m.embeds.iter().filter(|e| e.gif).filter_map(|e| Some(embed_image_url(e.image.as_deref()?, false))));
+                }
             }
         }
         urls
@@ -337,6 +506,69 @@ impl Chat {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn ready_lands_on_the_remembered_channel_and_survives_a_reconnect() {
+        let mut c = Chat { restore: Some((Some("g1".into()), "c2".into())), ..Chat::default() };
+        c.apply_ready(&ready());
+        assert_eq!(c.position(), Some((Some("g1".into()), "c2".into())));
+        c.open_guild(Some(1));
+        c.open_guild(Some(0));
+        c.open_channel(0);
+        let here = c.position();
+        c.apply_ready(&ready());
+        assert_eq!(c.position(), here, "a new READY keeps what is open");
+        let mut gone = Chat { restore: Some((Some("zz".into()), "nope".into())), ..Chat::default() };
+        gone.apply_ready(&ready());
+        assert_eq!(gone.nav, Nav { guild: Some(0), channel: 0 }, "an unknown place falls back to the first server");
+    }
+
+    #[test]
+    fn reactions_count_once_even_when_our_own_echo_arrives() {
+        let mut c = Chat::default();
+        c.logs.entry("c".into()).or_default().msgs.push(Msg::local("m".into(), User::from_json(&json!({"id":"1","username":"a"})).unwrap(), "hi".into(), Delivery::Sent));
+        let up = json!({"name": "👍", "id": null});
+        assert!(c.on_reaction("c", "m", &up, true, true));
+        assert!(!c.on_reaction("c", "m", &up, true, true), "the echo of our own reaction changes nothing");
+        assert!(c.on_reaction("c", "m", &up, false, true));
+        let r = &c.logs["c"].msgs[0].reactions[0];
+        assert_eq!((r.count, r.me), (2, true));
+        assert!(c.on_reaction("c", "m", &up, true, false));
+        assert!(c.on_reaction("c", "m", &up, false, false));
+        assert!(c.logs["c"].msgs[0].reactions.is_empty(), "no one left, no pill");
+    }
+
+    #[test]
+    fn voice_states_track_who_is_in_which_channel() {
+        let mut c = Chat::default();
+        assert!(c.on_voice_state(&json!({"user_id": "1", "channel_id": "v1", "self_mute": true})));
+        assert!(c.on_voice_state(&json!({"user_id": "2", "channel_id": "v1", "self_deaf": true})));
+        assert_eq!(c.voice["v1"].len(), 2);
+        assert!(c.voice["v1"][0].muted() && !c.voice["v1"][0].deafened());
+        assert!(c.voice["v1"][1].deafened());
+        assert!(!c.on_voice_state(&json!({"user_id": "1", "channel_id": "v1", "self_mute": true})), "no change, no redraw");
+        assert!(c.on_voice_state(&json!({"user_id": "1", "channel_id": "v2"})));
+        assert_eq!(c.voice["v2"][0].user_id, "1");
+        assert_eq!(c.voice["v1"].len(), 1, "moving leaves the old channel");
+        assert!(c.on_voice_state(&json!({"user_id": "2", "channel_id": null})));
+        assert!(!c.voice.contains_key("v1"), "an empty channel disappears");
+    }
+
+    #[test]
+    fn stills_are_only_asked_for_while_unfocused() {
+        let mut c = Chat { media: Some("https://m".into()), ..Chat::default() };
+        c.apply_ready(&ready());
+        let mut gif = Message::plain("m1", "c1", "", User { id: "9".into(), username: "x".into(), global_name: None, avatar: None, discriminator: None });
+        gif.attachments.push(fluxer_client::api::Attachment { id: "a".into(), filename: "x.gif".into(), content_type: Some("image/gif".into()),
+            url: Some("https://m/x.gif".into()), width: Some(10), height: Some(10), size: 1 });
+        c.on_history("c1", vec![gif]);
+        c.nav = Nav { guild: Some(0), channel: 0 };
+        let focused = c.wanted_images(80, false);
+        let blurred = c.wanted_images(80, true);
+        assert!(focused.iter().any(|u| u.contains("animated=true")));
+        assert!(!focused.iter().any(|u| u.contains("format=png")), "no still while focused");
+        assert!(blurred.iter().any(|u| u.contains("x.gif") && u.contains("format=png")), "the still first frame is fetched when blurred");
+    }
 
     fn user(id: &str, name: &str) -> Value { json!({"id": id, "username": name, "avatar": null}) }
 
@@ -357,7 +589,7 @@ mod tests {
     }
 
     fn msg(id: &str, ch: &str, who: &str, body: &str) -> Message {
-        Message::plain(id, ch, body, User { id: who.into(), username: who.into(), global_name: None, avatar: None })
+        Message::plain(id, ch, body, User { id: who.into(), username: who.into(), global_name: None, avatar: None, discriminator: None })
     }
 
     #[test]
@@ -442,14 +674,14 @@ mod tests {
         m.attachments.push(Attachment { id: "b".into(), filename: "x.zip".into(), content_type: Some("application/zip".into()), url: Some("https://m/x.zip".into()), width: None, height: None, size: 1 });
         m.embeds.push(Embed { image: Some("https://m/e.jpg".into()), title: Some("t".into()), ..Embed::default() });
         c.on_message(m);
-        let urls = c.wanted_images(80);
+        let urls = c.wanted_images(80, false);
         assert!(urls.contains(&"https://m/e.jpg?format=png&width=480".to_string()), "embed pictures are fetched");
         assert!(urls.contains(&"https://media/icons/g1/ic.png?size=128".to_string()));
         assert!(urls.contains(&"https://media/avatars/2/av2.png?size=128".to_string()));
         assert!(urls.contains(&"https://m/f.png?format=png&width=720".to_string()));
         assert!(!urls.iter().any(|u| u.contains("x.zip")), "only images are fetched");
         c.media = None;
-        assert!(c.wanted_images(80).is_empty(), "without a media host there is nothing to ask");
+        assert!(c.wanted_images(80, false).is_empty(), "without a media host there is nothing to ask");
     }
 
     #[test]

@@ -30,6 +30,9 @@ fn local_parts(ms: i64) -> (i64, i64) {
 
 pub fn day_of(ms: i64) -> i64 { local_parts(ms).0 }
 
+/// (year, month, day) in local time.
+pub fn ymd(ms: i64) -> (i64, i64, i64) { civil(day_of(ms)) }
+
 pub fn hhmm(ms: i64) -> String {
     let m = local_parts(ms).1;
     format!("{:02}:{:02}", m / 60, m % 60)

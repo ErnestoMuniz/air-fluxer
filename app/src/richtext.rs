@@ -1,11 +1,11 @@
 //! Turns Fluxer message text into Markdown Rune can draw: mentions and custom emoji become plain
 //! text, and single newlines become hard line breaks (chat semantics, not CommonMark's).
 
-use fluxer_client::api::User;
 use std::borrow::Cow;
 
 /// Replaces `<@id>`, `<@&id>`, `<#id>`, `<:name:id>` and `<a:name:id>`.
-fn rewrite_tokens(src: &str, mentions: &[User]) -> String {
+/// `mentions` is (id, display-name) pairs: the caller passes the guild nickname when there is one.
+fn rewrite_tokens(src: &str, mentions: &[(String, String)]) -> String {
     let mut out = String::with_capacity(src.len());
     let mut rest = src;
     while let Some(start) = rest.find('<') {
@@ -22,14 +22,17 @@ fn rewrite_tokens(src: &str, mentions: &[User]) -> String {
     out
 }
 
-fn token(inner: &str, mentions: &[User]) -> Option<String> {
+fn token(inner: &str, mentions: &[(String, String)]) -> Option<String> {
     if let Some(id) = inner.strip_prefix("@&") {
         return id.bytes().all(|b| b.is_ascii_digit()).then(|| "**@cargo**".into());
     }
     if let Some(id) = inner.strip_prefix("@!").or_else(|| inner.strip_prefix('@')) {
         if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) { return None }
-        let name = mentions.iter().find(|u| u.id == id).map_or("alguém", |u| u.display());
-        return Some(format!("**@{}**", name.replace('*', "")));
+        let name = mentions.iter().find(|(i, _)| i == id).map_or("alguém", |(_, n)| n.as_str());
+        // A link whose look is the mention pill (see `message_text`); the id rides the URL
+        // so a click can open the person's profile card.
+        let label: String = name.chars().flat_map(|c| if "\\[]*".contains(c) { vec!['\\', c] } else { vec![c] }).collect();
+        return Some(format!("[@{label}](fluxer-mention:{id})"));
     }
     if let Some(id) = inner.strip_prefix('#') {
         return (!id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())).then(|| "**#canal**".into());
@@ -60,7 +63,7 @@ pub fn needs_markdown(s: &str) -> bool {
 }
 
 /// The Markdown source to render for a message body.
-pub fn prepare<'a>(body: &'a str, mentions: &[User]) -> Cow<'a, str> {
+pub fn prepare<'a>(body: &'a str, mentions: &[(String, String)]) -> Cow<'a, str> {
     if !body.contains('<') && !body.contains('\n') { return Cow::Borrowed(body) }
     Cow::Owned(hard_breaks(&rewrite_tokens(body, mentions)))
 }
@@ -75,13 +78,13 @@ pub fn preview(body: &str, max: usize) -> String {
 mod tests {
     use super::*;
 
-    fn user(id: &str, name: &str) -> User { User { id: id.into(), username: name.into(), global_name: None, avatar: None } }
-
     #[test]
     fn mentions_and_emoji_become_text() {
-        let m = [user("12", "ana")];
-        assert_eq!(prepare("oi <@12> e <@!12>!", &m), "oi **@ana** e **@ana**!");
-        assert_eq!(prepare("<@99> sumiu", &m), "**@alguém** sumiu");
+        // (id, display-name): the display name is the guild nickname when there is one.
+        let m = [("12".to_string(), "ana apelido".to_string())];
+        assert_eq!(prepare("oi <@12> e <@!12>!", &m), "oi [@ana apelido](fluxer-mention:12) e [@ana apelido](fluxer-mention:12)!");
+        assert_eq!(prepare("<@99> sumiu", &m), "[@alguém](fluxer-mention:99) sumiu");
+        assert_eq!(prepare("<@12>", &[("12".into(), "a]b[c".into())]), "[@a\\]b\\[c](fluxer-mention:12)", "brackets in a name are escaped");
         assert_eq!(prepare("<:pepe:123456> <a:dance:99>", &[]), ":pepe: :dance:");
         assert_eq!(prepare("veja <#555> e <@&7>", &[]), "veja **#canal** e **@cargo**");
         assert_eq!(prepare("a < b e c > d", &[]), "a < b e c > d", "a stray angle bracket is left alone");
