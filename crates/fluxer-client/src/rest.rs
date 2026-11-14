@@ -58,13 +58,18 @@ impl std::fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
+/// One agent for the whole process: clones share its connection pool, so a burst of pictures from
+/// the same host reuses connections instead of paying a TCP and TLS handshake each.
 pub(crate) fn agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        .timeout_global(Some(Duration::from_secs(30)))
-        .user_agent("fluxer-rune")
-        .build()
-        .into()
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(Duration::from_secs(30)))
+            .user_agent("fluxer-rune")
+            .build()
+            .into()
+    }).clone()
 }
 
 /// `https://host` or `host`; the trailing slash goes.
