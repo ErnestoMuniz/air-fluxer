@@ -48,7 +48,14 @@ NSGraphicsContext.saveGraphicsState()
 NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
 NSColor.clear.setFill()
 NSRect(x: 0, y: 0, width: size, height: size).fill()
-image.draw(in: NSRect(x: 0, y: 0, width: size, height: size))
+// The macOS tile: a rounded square in the brand colour with the waves (the same-colour circle
+// in the SVG disappears into it) inset so the glyph keeps Apple's margins.
+let d = CGFloat(size)
+let tile = NSRect(x: d * 0.04, y: d * 0.04, width: d * 0.92, height: d * 0.92)
+NSColor(srgbRed: 0x46 / 255.0, green: 0x41 / 255.0, blue: 0xD9 / 255.0, alpha: 1).setFill()
+NSBezierPath(roundedRect: tile, xRadius: d * 0.185, yRadius: d * 0.185).fill()
+let inner = d * 0.68
+image.draw(in: NSRect(x: (d - inner) / 2, y: (d - inner) / 2, width: inner, height: inner))
 NSGraphicsContext.restoreGraphicsState()
 guard let png = rep.representation(using: .png, properties: [:]) else { exit(1) }
 try! png.write(to: URL(fileURLWithPath: args[3]))

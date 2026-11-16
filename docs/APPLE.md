@@ -70,4 +70,4 @@ arm64). O áudio do sistema é o CoreAudio; o Linux continua no PulseAudio. A ch
   x86_64 baixa o libwebrtc dele.
 - **Integrações nativas**: o token agora vai para o Keychain do macOS (o JSON fica sem ele); faltam
   deep links, LaunchServices e auto-update.
-- **Ícone**: hoje é o círculo do logo; o estilo do macOS costuma ser um "squircle" com margem.
+- **Ícone**: gerado como tile arredondado (squircle) na cor da marca; só o logo pode mudar no futuro.
