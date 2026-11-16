@@ -3,6 +3,7 @@
 //! `-- --snap out.png [--scene login|code|ip]` renders it headless.
 
 mod anim;
+mod icons;
 mod animsize;
 mod auth;
 mod audio;
@@ -18,6 +19,7 @@ mod roster;
 mod sounds;
 mod store;
 mod upload;
+mod attach;
 mod voice;
 mod ui;
 
@@ -79,6 +81,8 @@ pub struct State {
     pub chat: Chat,
     pub net: net::Net,
     pub draft: TextEdit,
+    /// Pictures and files waiting in the message box, sent with the next message.
+    pub attachments: Vec<attach::Pending>,
     pub gateway: Option<gateway::Handle>,
     /// The (server, channel) whose member list the gateway is sending us.
     pub subscribed: Option<(String, String)>,
@@ -140,7 +144,7 @@ impl Default for State {
             rail_hover: None, settings_open: false, pf: Default::default(), prof: [TextEdit::new(""), TextEdit::new(""), TextEdit::new(""), TextEdit::new("")],
             picker: Default::default(), prefs: prefs::load(), plus_open: false, msg_hover: None, react_picker: None, highlighted: None, pointer: rune::Live::new([0.0, 0.0]), video: None, customize_open: false, notice: None,
             ctx: None, profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
-            intro: 0.0, intro_t0: None, chat: demo_chat(), net: net::Net::default(), draft: TextEdit::new(""), gateway: None, subscribed: None, synced_guilds: Default::default(), show_members: true, call: Default::default(), focused: true, visible: 0..0, typing_wake: false, thumb: Default::default(),
+            intro: 0.0, intro_t0: None, chat: demo_chat(), net: net::Net::default(), draft: TextEdit::new(""), attachments: Vec::new(), gateway: None, subscribed: None, synced_guilds: Default::default(), show_members: true, call: Default::default(), focused: true, visible: 0..0, typing_wake: false, thumb: Default::default(),
         }
     }
 }
@@ -563,8 +567,18 @@ pub fn retry(s: &mut State, local: &str) {
 /// the gateway echo, whichever comes first. In demo mode it just appears.
 pub fn send(s: &mut State) {
     let body = s.draft.text.trim().to_string();
+    if !s.attachments.is_empty() { return send_attachments(s, body) }
     if body.is_empty() { return }
     send_body(s, body);
+    s.draft = TextEdit::new("");
+}
+
+/// Sends the waiting attachments with `body` as the message's text, and clears the message box.
+fn send_attachments(s: &mut State, body: String) {
+    let Some(cid) = s.chat.channel_id().map(String::from) else { return };
+    s.notice = None;
+    let files = s.attachments.drain(..).map(|p| p.outgoing()).collect();
+    s.net.send_files(&cid, &body, files);
     s.draft = TextEdit::new("");
 }
 

@@ -8,18 +8,6 @@ use super::*;
 
 // ---------------------------------------------------------------- icons
 
-static X: rune::Icon = rune::Icon { name: "app-set-x", view: 24.0, body: r#"<path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>"# };
-static CHEV_DOWN: rune::Icon = rune::Icon { name: "app-set-chev-down", view: 24.0, body: r#"<path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"# };
-static SEARCH: rune::Icon = rune::Icon { name: "app-set-search", view: 24.0, body: r#"<circle cx="10.5" cy="10.5" r="6.5" stroke="currentColor" stroke-width="2" fill="none"/><path d="M15.5 15.5L20 20" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>"# };
-static LINK: rune::Icon = rune::Icon { name: "app-set-link", view: 24.0, body: r#"<path d="M10 14a4.5 4.5 0 0 0 6.36 0l2.64-2.64a4.5 4.5 0 0 0-6.36-6.36L11.5 6.14" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/><path d="M14 10a4.5 4.5 0 0 0-6.36 0L5 12.64a4.5 4.5 0 0 0 6.36 6.36l1.14-1.14" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>"# };
-static ATOM: rune::Icon = rune::Icon { name: "app-set-atom", view: 24.0, body: r#"<ellipse cx="12" cy="12" rx="9" ry="3.8" stroke="currentColor" stroke-width="1.8" fill="none"/><ellipse cx="12" cy="12" rx="3.8" ry="9" stroke="currentColor" stroke-width="1.8" fill="none"/><circle cx="12" cy="12" r="1.9" fill="currentColor"/>"# };
-static PENCIL: rune::Icon = rune::Icon { name: "app-set-pencil", view: 24.0, body: r#"<path d="M4 20.1l4.4-1.1L19.6 7.8a2.2 2.2 0 0 0-3.1-3.1L5.3 15.9z" fill="currentColor"/><path d="M14.6 6.5l3.1 3.1" stroke="currentColor" stroke-width="1.7" fill="none"/>"# };
-static SHUFFLE: rune::Icon = rune::Icon { name: "app-set-shuffle", view: 24.0, body: r#"<path d="M3 7h3.4l10.2 10h4M3 17h3.4l10.2-10h4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M17.8 4.2L21 7l-3.2 2.8M17.8 14.2L21 17l-3.2 2.8" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"# };
-static SMILE: rune::Icon = rune::Icon { name: "app-set-smile", view: 24.0, body: r#"<circle cx="12" cy="12" r="8.6" stroke="currentColor" stroke-width="1.8" fill="none"/><circle cx="9" cy="10" r="1.3" fill="currentColor"/><circle cx="15" cy="10" r="1.3" fill="currentColor"/><path d="M8.4 14.2c1 1.9 6.2 1.9 7.2 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/>"# };
-static CHECK: rune::Icon = rune::Icon { name: "app-set-check", view: 24.0, body: r#"<path d="M5 12.5l4.5 4.5L19 7.5" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"# };
-static EYEDROP: rune::Icon = rune::Icon { name: "app-set-eyedrop", view: 24.0, body: r#"<path d="M17.8 2.9a2.6 2.6 0 0 1 3.7 3.7l-1.9 1.9 1 1-2.2 2.2-1-1-6.6 6.6-3.9 1 1-3.9 6.6-6.6-1-1 2.2-2.2 1 1z" fill="currentColor"/>"# };
-static BUBBLE: rune::Icon = rune::Icon { name: "app-set-bubble", view: 24.0, body: r#"<path d="M4 5.4A2.6 2.6 0 0 1 6.6 2.8h10.8A2.6 2.6 0 0 1 20 5.4v8.2a2.6 2.6 0 0 1-2.6 2.6h-6.9l-4.4 3.6v-3.6h-.1A2.6 2.6 0 0 1 4 13.6z" fill="currentColor"/>"# };
-
 // ---------------------------------------------------------------- palette
 
 fn hx(s: &str) -> Color { rune::color::hex(s).unwrap_or(Color::BLACK) }
@@ -463,8 +451,6 @@ fn about_field(s: &State, k: &Kit) -> El {
             .child(el().pin(None, None, Some(10.0), Some(6.0)).radius(4.0).fill(field_bg()).px(4.0).py(1.0).child(text(left.to_string()).font(title(12.0, 500.0)).color(if left < 0 { hx("#F0707A") } else { dim() }))))
         .child(note("You can use links, emoji, and Markdown.", 374.0))
 }
-
-static EXIT: rune::Icon = rune::Icon { name: "app-set-exit", view: 24.0, body: r#"<path d="M14 3.5h-9A1.5 1.5 0 0 0 3.5 5v14a1.5 1.5 0 0 0 1.5 1.5h9" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/><path d="M9.5 12h11M17 8l4 4-4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"# };
 
 /// "Linux 7.2.15-1-omarchy (x64)" from the running kernel and architecture.
 fn os_info() -> String {
