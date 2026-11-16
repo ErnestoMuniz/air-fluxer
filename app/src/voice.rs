@@ -103,7 +103,7 @@ pub fn user_of_identity(identity: &str) -> Option<String> {
 }
 
 struct Live {
-    room: Room,
+    room: Arc<Room>,
     mic: LocalAudioTrack,
     events: UnboundedReceiver<RoomEvent>,
     capture: Option<Capture>,
@@ -345,21 +345,18 @@ fn show_video(mut stream: NativeVideoStream, key: String, frames: Frames, tell: 
     })
 }
 
-/// The room's round-trip time in milliseconds: the RTCP report for our microphone when there is
-/// one, else the ICE candidate pair's own measurement.
+/// The room's round-trip time in milliseconds, as the web app shows it: the connection actually
+/// in use (the nominated ICE candidate pair), not any pair that was ever tried. A pair that lost
+/// to the chosen one, often a relay, keeps an old and much higher measurement. The RTCP report for
+/// our microphone is not used even as a fallback: it includes the server's reporting delay and
+/// reads about 3x too high, so until a pair is nominated the dock says "measuring".
 fn rtt_ms(stats: &[livekit::webrtc::stats::RtcStats]) -> Option<u32> {
     use livekit::webrtc::stats::RtcStats;
-    let mut pair = None;
-    for s in stats {
-        match s {
-            RtcStats::RemoteInboundRtp(r) if r.remote_inbound.round_trip_time > 0.0 =>
-                return Some((r.remote_inbound.round_trip_time * 1000.0).round() as u32),
-            RtcStats::CandidatePair(c) if c.candidate_pair.current_round_trip_time > 0.0 =>
-                pair = Some((c.candidate_pair.current_round_trip_time * 1000.0).round() as u32),
-            _ => {}
-        }
-    }
-    pair
+    stats.iter().filter_map(|s| match s {
+        RtcStats::CandidatePair(c) if c.candidate_pair.nominated && c.candidate_pair.current_round_trip_time > 0.0 =>
+            Some((c.candidate_pair.current_round_trip_time * 1000.0).round() as u32),
+        _ => None,
+    }).min()
 }
 
 async fn engine(mut cmds: UnboundedReceiver<Cmd>, out: mpsc::Sender<Ev>, wake: Waker, shared: Arc<Shared>, frames: Frames) {
@@ -378,7 +375,7 @@ async fn engine(mut cmds: UnboundedReceiver<Cmd>, out: mpsc::Sender<Ev>, wake: W
     loop {
         // While in a room, its events and the commands are served together.
         let in_room = live.is_some();
-        let probe = live.as_ref().map(|l| l.mic.clone());
+        let probe = live.as_ref().map(|l| l.room.clone());
         let ev = async {
             match live.as_mut() { Some(l) => l.events.recv().await, None => std::future::pending().await }
         };
@@ -388,9 +385,13 @@ async fn engine(mut cmds: UnboundedReceiver<Cmd>, out: mpsc::Sender<Ev>, wake: W
                 if now != shown { shown = now.clone(); send(Ev::Speaking(now)) }
             }
             _ = ping.tick(), if in_room => {
-                if let Some(track) = probe
-                    && let Ok(stats) = track.get_stats().await
-                    && let Some(ms) = rtt_ms(&stats) { send(Ev::Ping(ms)) }
+                // The whole connection's report, not the microphone's: a track's own report has no
+                // candidate pairs, so the ping would fall back to the (higher) RTCP figure.
+                if let Some(room) = probe
+                    && let Ok(all) = room.get_stats().await {
+                    let stats: Vec<_> = all.publisher_stats.into_iter().chain(all.subscriber_stats).collect();
+                    if let Some(ms) = rtt_ms(&stats) { send(Ev::Ping(ms)) }
+                }
             }
             cmd = cmds.recv() => {
                 let Some(cmd) = cmd else { break };
@@ -546,7 +547,7 @@ async fn connect(endpoint: &str, token: &str, e2ee_key: Option<String>, muted: b
     let publish = TrackPublishOptions { source: TrackSource::Microphone, ..Default::default() };
     room.local_participant().publish_track(LocalTrack::Audio(track.clone()), publish).await
         .map_err(|e| format!("não foi possível abrir o microfone: {e}"))?;
-    Ok(Live { room, mic: track, events, capture, frames, feed, remote: Default::default(), speaker: settings.speaker, video: Default::default(), watch: Default::default(), screen: None })
+    Ok(Live { room: Arc::new(room), mic: track, events, capture, frames, feed, remote: Default::default(), speaker: settings.speaker, video: Default::default(), watch: Default::default(), screen: None })
 }
 
 #[cfg(test)]
@@ -567,12 +568,13 @@ mod tests {
     }
 
     #[test]
-    fn the_round_trip_time_comes_from_the_rtcp_report() {
+    fn the_round_trip_time_comes_from_the_connection_in_use() {
         use livekit::webrtc::stats::RtcStats;
-        let s: RtcStats = serde_json::from_value(serde_json::json!({"type": "remote-inbound-rtp", "roundTripTime": 0.042})).unwrap();
-        assert_eq!(rtt_ms(&[s]), Some(42));
-        let pair: RtcStats = serde_json::from_value(serde_json::json!({"type": "candidate-pair", "currentRoundTripTime": 0.125})).unwrap();
-        assert_eq!(rtt_ms(&[pair]), Some(125), "the candidate pair answers when no RTCP report is in yet");
+        let rtcp: RtcStats = serde_json::from_value(serde_json::json!({"type": "remote-inbound-rtp", "roundTripTime": 0.180})).unwrap();
+        let used: RtcStats = serde_json::from_value(serde_json::json!({"type": "candidate-pair", "nominated": true, "currentRoundTripTime": 0.042})).unwrap();
+        let lost: RtcStats = serde_json::from_value(serde_json::json!({"type": "candidate-pair", "nominated": false, "currentRoundTripTime": 0.400})).unwrap();
+        assert_eq!(rtt_ms(&[lost.clone(), rtcp.clone(), used]), Some(42), "the nominated pair wins over the RTCP report and over pairs not in use");
+        assert_eq!(rtt_ms(&[lost, rtcp]), None, "the RTCP report is not a stand-in");
         assert_eq!(rtt_ms(&[]), None);
     }
 
