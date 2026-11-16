@@ -383,6 +383,7 @@ const DOCK_CALL_H: f32 = 108.0;
 static WAVEFORM: rune::Icon = rune::Icon { name: "app-waveform", view: 24.0, body: r#"<path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/>"# };
 static SIGNAL: rune::Icon = rune::Icon { name: "app-signal", view: 24.0, body: r#"<path d="M4 4a16 16 0 0 1 16 16M4 10a10 10 0 0 1 10 10M4 16a4 4 0 0 1 4 4" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/>"# };
 static SEARCH_ICON: rune::Icon = rune::Icon { name: "app-search", view: 24.0, body: r#"<circle cx="10.5" cy="10.5" r="6.5" stroke="currentColor" stroke-width="2.2" fill="none"/><path d="M15.5 15.5L20 20" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>"# };
+static PHONE: rune::Icon = rune::Icon { name: "app-phone", view: 24.0, body: r#"<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z" fill="currentColor"/>"# };
 static CHEVRON: rune::Icon = rune::Icon { name: "app-chevron", view: 24.0, body: r#"<path d="M9 5l7 7-7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"# };
 static CHECK: rune::Icon = rune::Icon { name: "app-check", view: 24.0, body: r#"<path d="M5 12.5l4.5 4.5L19 7.5" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"# };
 
@@ -1399,6 +1400,27 @@ fn voice_panel(s: &State) -> El {
     stage.child(faces).child(bar)
 }
 
+/// The band above the chat while a DM call is ringing for this account.
+fn incoming_call_bar(s: &State) -> El {
+    let Some(cid) = &s.incoming_call else { return el().size(0.0, 0.0) };
+    let (p, t) = (pal(), tok::theme(true));
+    let name = s.chat.dms.iter().find(|c| c.id == *cid).and_then(|c| c.peer.as_ref())
+        .map(|u| u.display().to_string()).unwrap_or_else(|| "Alguém".into());
+    let channel = cid.clone();
+    let me = s.chat.me.as_ref().map(|u| u.id.clone()).unwrap_or_default();
+    row().key("incoming-call").w_full().h(46.0).px(16.0).gap(10.0).center_y().fill(p.brand)
+        .child(rune::icon(&PHONE, 18.0).color(t.knob))
+        .child(text(format!("{name} está chamando")).font(type_::TITLE).color(t.knob).grow(1.0))
+        .child(row().key("call-accept").h(28.0).px(12.0).radius(radius::SM).center().fill(GREEN())
+            .child(text("Atender").font(type_::LABEL).color(t.knob))
+            .cursor(rune::Cursor::Pointer).on_press(move |s: &mut State| crate::start_dm_call(s, &channel)))
+        .child(row().key("call-decline").h(28.0).px(12.0).radius(radius::SM).center().fill(p.unread)
+            .child(text("Recusar").font(type_::LABEL).color(t.knob))
+            .cursor(rune::Cursor::Pointer).on_press(move |s: &mut State| {
+                if let Some(ch) = s.incoming_call.take() { s.net.stop_ringing(&ch, Some(vec![me.clone()])) }
+            }))
+}
+
 fn main_view(s: &State, stage: Option<[f32; 2]>) -> El {
     let (p, t) = (pal(), tok::theme(true));
     let prefix = if s.chat.nav.guild.is_some() { "#" } else { "@" };
@@ -1423,16 +1445,22 @@ fn main_view(s: &State, stage: Option<[f32; 2]>) -> El {
                 if s.search.open { tx.focus("search-input", false) } else { s.search.results.clear(); s.search.input.clear() }
             }));
     }
+    if let Some(ch) = s.chat.channel().filter(|c| c.peer.is_some()) {
+        let cid = ch.id.clone();
+        header = header.child(row().key("dm-call").size(28.0, 28.0).center().radius(radius::SM).hover(p.select)
+            .child(rune::icon(&PHONE, 16.0).color(t.text))
+            .cursor(rune::Cursor::Pointer).on_press(move |s: &mut State| crate::start_dm_call(s, &cid)));
+    }
     // The message box floats over the bottom of the chat, so the messages scroll behind its
     // frosted glass instead of stopping dead above a solid strip.
     let composer = compose::composer(s).pin(Some(0.0), None, Some(0.0), Some(0.0));
     let mosaic = s.call.view && s.call.active();
     let main = if mosaic {
-        col().grow(1.0).h_full().min_w(0.0).fill(p.chat).child(header).child(el().w_full().h(1.0).fill(p.line)).child(mosaic::view(s, stage))
+        col().grow(1.0).h_full().min_w(0.0).fill(p.chat).child(incoming_call_bar(s)).child(header).child(el().w_full().h(1.0).fill(p.line)).child(mosaic::view(s, stage))
     } else if s.search.open {
-        col().grow(1.0).h_full().min_w(0.0).fill(p.chat).child(header).child(el().w_full().h(1.0).fill(p.line)).child(search_view(s))
+        col().grow(1.0).h_full().min_w(0.0).fill(p.chat).child(incoming_call_bar(s)).child(header).child(el().w_full().h(1.0).fill(p.line)).child(search_view(s))
     } else {
-        col().grow(1.0).h_full().min_w(0.0).fill(p.chat).child(header).child(el().w_full().h(1.0).fill(p.line))
+        col().grow(1.0).h_full().min_w(0.0).fill(p.chat).child(incoming_call_bar(s)).child(header).child(el().w_full().h(1.0).fill(p.line))
             .child(voice_panel(s)).child(message_list(s)).child(composer)
     };
     let mut all = row().w_full().h_full().fill(p.rail).child(guild_rail(s)).child(channel_list(s)).child(main);

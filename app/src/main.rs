@@ -145,6 +145,8 @@ pub struct State {
     pub search: Search,
     /// A message to center once its around-page arrives (a search hit outside the loaded history).
     pending_jump: Option<(String, String)>,
+    /// A DM call ringing for this account (channel id).
+    pub incoming_call: Option<String>,
     pub profile: Option<Prof>,
     /// Profiles fetched so far, by `net::profile_key`.
     pub profiles: std::collections::HashMap<String, fluxer_client::api::Profile>,
@@ -219,7 +221,7 @@ impl Default for State {
         State {
             rail_hover: None, settings_open: false, pf: Default::default(), prof: [TextEdit::new(""), TextEdit::new(""), TextEdit::new(""), TextEdit::new("")],
             picker: Default::default(), prefs: prefs::load(), plus_open: false, msg_hover: None, react_picker: None, highlighted: None, pointer: rune::Live::new([0.0, 0.0]), member_search: TextEdit::new(""), my_status: "online".into(), status_menu: false, video: None, customize_open: false, notice: None,
-            ctx: None, msg_menu: None, draft_mode: Draft { reply: None, editing: None }, acked: None, search: Default::default(), pending_jump: None, profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
+            ctx: None, msg_menu: None, draft_mode: Draft { reply: None, editing: None }, acked: None, search: Default::default(), pending_jump: None, incoming_call: None, profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
             intro: 0.0, intro_t0: None, chat: demo_chat(), net: net::Net::default(), draft: TextEdit::new(""), gateway: None, subscribed: None, synced_guilds: Default::default(), show_members: true, call: Default::default(), focused: true, visible: 0..0, typing_wake: false, thumb: Default::default(),
         }
     }
@@ -304,6 +306,20 @@ fn apply(s: &mut State, e: Event) -> bool {
                 (Some(c), Some(id)) => s.chat.on_message_deleted(c, id),
                 _ => false,
             },
+            "CALL_CREATE" => {
+                let me = s.chat.me.as_ref().map(|u| u.id.clone());
+                let ringing = d.get("ringing").and_then(Value::as_array).into_iter().flatten()
+                    .filter_map(Value::as_str).any(|id| Some(id) == me.as_deref());
+                if ringing && let Some(c) = str_at(&d, &["channel_id"]) { s.incoming_call = Some(c.into()); true } else { false }
+            }
+            "CALL_DELETE" => {
+                if let Some(c) = str_at(&d, &["channel_id"]) {
+                    if s.incoming_call.as_deref() == Some(c) { s.incoming_call = None }
+                    if s.call.active() && s.call.channel_id.as_deref() == Some(c) { s.call.leave(s.gateway.as_ref()); }
+                    true
+                } else { false }
+            }
+            "CALL_UPDATE" => false,
             _ => false,
         },
         Event::Payload(_) => false,
@@ -586,11 +602,20 @@ pub fn jump_to(s: &mut State, tx: &mut rune::Tx, id: &str) {
 /// Clicking a voice channel joins it (unless already in it) and shows the call's mosaic.
 pub fn join_voice(s: &mut State, channel: &str) {
     let Some(guild) = s.chat.voice_channel(channel).map(|(g, _)| g.id.clone()) else { return };
-    s.call.join(s.gateway.as_ref(), &guild, channel);
+    s.call.join(s.gateway.as_ref(), Some(&guild), channel);
     if s.call.channel_id.as_deref() == Some(channel) {
         s.call.view = true;
         s.chat.voice_view = None;
     }
+}
+
+/// Starts (or joins) the DM call of the open direct-message channel.
+pub fn start_dm_call(s: &mut State, channel: &str) {
+    let peer = s.chat.dms.iter().find(|c| c.id == channel).and_then(|c| c.peer.as_ref()).map(|p| p.id.clone());
+    if let Some(p) = peer { s.net.ring_call(channel, vec![p]) }
+    s.incoming_call = None;
+    s.call.join(s.gateway.as_ref(), None, channel);
+    s.call.view = true;
 }
 
 pub fn watch_stream(s: &mut State, connection: &str, on: bool) { s.call.set_watching(s.gateway.as_ref(), connection, on) }

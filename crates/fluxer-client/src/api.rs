@@ -479,6 +479,27 @@ impl Api {
         Ok(SearchOutcome::Hits(msgs))
     }
 
+    /// Starts ringing the people in a DM call.
+    pub fn ring_call(&self, channel_id: &str, recipients: &[String]) -> Result<(), Error> {
+        self.call_action(channel_id, "ring", json!({ "recipients": recipients }))
+    }
+
+    /// Stops ringing (all, or just `recipients`).
+    pub fn stop_ringing(&self, channel_id: &str, recipients: Option<&[String]>) -> Result<(), Error> {
+        let body = match recipients { Some(r) => json!({ "recipients": r }), None => Value::Object(Default::default()) };
+        self.call_action(channel_id, "stop-ringing", body)
+    }
+
+    fn call_action(&self, channel_id: &str, action: &str, body: Value) -> Result<(), Error> {
+        let url = format!("{}/channels/{channel_id}/call/{action}", self.ep.api_client);
+        let mut r = agent().post(&url).header("Accept", "application/json").header("Authorization", &self.token);
+        if let Some(o) = &self.ep.origin { r = r.header("Origin", o.as_str()) }
+        let mut res = r.send_json(&body).map_err(|e| Error::local(format!("falha de rede: {e}")))?;
+        let status = res.status().as_u16();
+        let body = res.body_mut().read_json().unwrap_or(Value::Null);
+        if (200..300).contains(&status) { Ok(()) } else { Err(failure(&crate::rest::Reply { status, body })) }
+    }
+
     /// A page of messages centered on `message_id` (jumping to a search hit).
     pub fn messages_around(&self, channel_id: &str, message_id: &str, limit: u32) -> Result<Vec<Message>, Error> {
         let body = self.get(&format!("/channels/{channel_id}/messages?around={message_id}&limit={limit}"))?;

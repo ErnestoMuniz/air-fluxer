@@ -212,6 +212,20 @@ impl Net {
         self.job(move || api.send_sticker(&c, &st, &nonce).map(|_| ()).map_err(|e| e.message), Done::Posted);
     }
 
+    /// Starts ringing the other people of a DM call.
+    pub fn ring_call(&self, channel: &str, recipients: Vec<String>) {
+        let Some(api) = self.api.clone() else { return };
+        let c = channel.to_string();
+        self.job(move || api.ring_call(&c, &recipients).map_err(|e| e.message), Done::Posted);
+    }
+
+    /// Stops ringing everyone (or just `recipients`) in a DM call.
+    pub fn stop_ringing(&self, channel: &str, recipients: Option<Vec<String>>) {
+        let Some(api) = self.api.clone() else { return };
+        let c = channel.to_string();
+        self.job(move || api.stop_ringing(&c, recipients.as_deref()).map_err(|e| e.message), Done::Posted);
+    }
+
     /// Sends `content` as a reply to `reply_to`; `local` is the optimistic message id.
     pub fn send_reply(&self, channel: &str, local: &str, content: &str, reply_to: &str) {
         let Some(api) = self.api.clone() else { return };

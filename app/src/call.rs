@@ -196,7 +196,7 @@ impl Call {
         })) }
     }
 
-    pub fn join(&mut self, gw: Option<&Handle>, guild: &str, channel: &str) {
+    pub fn join(&mut self, gw: Option<&Handle>, guild: Option<&str>, channel: &str) {
         if self.channel_id.as_deref() == Some(channel) { return }
         let Some(gw) = gw else { return };
         // Moving between channels keeps the same connection; a fresh join starts without one.
@@ -204,7 +204,7 @@ impl Call {
         // Streams belong to a channel: moving to another one watches none.
         self.watching.clear();
         self.engine_send(Cmd::Watch(Vec::new()));
-        self.guild_id = Some(guild.into());
+        self.guild_id = guild.map(String::from);
         self.channel_id = Some(channel.into());
         self.error = None;
         if gw.send(self.frame(Some(channel))) { self.phase = Phase::Connecting } else { self.reset() }
