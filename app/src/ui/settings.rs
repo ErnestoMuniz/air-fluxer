@@ -62,11 +62,21 @@ pub enum GuildMedia {
     Hide,
 }
 
+/// Which settings page the dialog shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Page {
+    #[default]
+    Profile,
+    Voice,
+}
+
 /// What the profile page keeps besides the text fields (`State::prof`).
 #[derive(Default)]
 pub struct Form {
     /// The server whose profile is edited (index into the guilds); None is the account's own.
     pub kind: Option<usize>,
+    /// Which page the sidebar has selected.
+    pub page: Page,
     pub type_open: bool,
     /// The values as saved: the fields differ from these exactly when there is something to save.
     pub base: [String; 4],
@@ -184,13 +194,14 @@ pub fn open(s: &mut State) {
     if !s.settings_open && s.chat.me.is_some() {
         s.pf = Form::default();
         load_values(s);
+        s.call.refresh_devices();
     }
     s.settings_open = true;
 }
 
 /// Closing needs the changes saved or thrown away first; otherwise the bar points at its buttons.
 fn close(s: &mut State) {
-    if dirty(s) { s.pf.nag = true; return }
+    if dirty(s) { s.pf.page = Page::Profile; s.pf.nag = true; return }
     s.settings_open = false;
     s.pf = Form::default();
 }
@@ -507,56 +518,91 @@ fn side_footer() -> El {
         .child(links)
 }
 
-pub fn dialog(s: &State) -> El {
-    if !s.settings_open || s.chat.me.is_none() { return el().size(0.0, 0.0) }
-    let Some(me) = s.chat.me.clone() else { return el().size(0.0, 0.0) };
-    let k = fields();
+// ---------------------------------------------------------------- voice & audio
 
-    // ---- sidebar ----
-    let search = row().h(32.0).px(10.0).gap(8.0).center_y().radius(radius::SM)
-        .border(1.0, hx("#3A3642"))
-        .child(rune::icon(&SEARCH, 16.0).color(dim()))
-        .child(text("Search settings...").font(title(14.0, 400.0)).color(dim()));
-    let face = row().size(40.0, 40.0)
-        .child(avatar(s, &me, 40.0))
-        .child(el().absolute(28.0, 28.0).size(12.0, 12.0).radius(6.0)
-            .fill(status_color(&s.chat.roster.status_of(&me.id))).border(2.0, pressed_row()));
-    let side_body = col().w_full().px(12.0).py(16.0).gap(2.0)
-        .child(search)
-        .child(row().h(10.0))
-        .child(row().h(44.0).px(8.0).gap(10.0).center_y().radius(radius::SM).fill(pressed_row())
-            .child(face)
-            .child(col().gap(1.0)
-                .child(text(me.display().to_string()).font(title(15.0, 600.0)).color(ink()))
-                .child(row().gap(4.0).center_y()
-                    .child(rune::icon(&PENCIL, 11.0).color(dim()))
-                    .child(text("Edit your profile").font(title(13.0, 400.0)).color(dim())))
-            )
-            .cursor(rune::Cursor::Pointer));
-    let side = col().w(320.0).h_full().fill(sidebar_bg())
-        .child(side_body.scroll(ScrollSpec { stick_bottom: false }).grow(1.0).min_h(0.0))
-        .child(side_footer());
+/// One device in the settings list: a radio row that saves the choice at once.
+fn device_row(key: String, label: String, hint: String, on: bool, f: Box<dyn Fn(&mut State)>) -> El {
+    let dot = row().size(18.0, 18.0).radius(9.0).border(2.0, if on { accent() } else { hx("#3A3642") }).center()
+        .child(if on { el().size(8.0, 8.0).radius(4.0).fill(accent()) } else { el().size(0.0, 0.0) });
+    let mut words = col().gap(1.0).grow(1.0).min_w(0.0)
+        .child(text(label).font(title(14.0, 500.0)).color(ink()).truncate());
+    let tall = !hint.is_empty();
+    if tall {
+        words = words.child(text(hint).font(title(12.0, 400.0)).color(dim()).truncate());
+    }
+    let mut item = row().key(key).w_full().h(if tall { 56.0 } else { 44.0 }).px(12.0).gap(12.0).center_y()
+        .radius(radius::SM).fill(if on { pressed_row() } else { oklcha(0.0, 0.0, 0.0, 0.0) })
+        .hover(if on { pressed_row() } else { hover() })
+        .child(dot).child(words);
+    if on { item = item.child(rune::icon(&CHECK, 16.0).color(accent())) }
+    item.cursor(rune::Cursor::Pointer).on_press(move |s: &mut State| f(s))
+}
 
-    // ---- header: the title, or the bar about unsaved changes ----
-    let changed = dirty(s);
-    let blocked = problem(s);
-    let top = if changed {
-        let msg = if s.pf.nag { "Save or reset your changes before leaving.".to_string() }
-            else if let Some(e) = s.pf.error.clone().or(blocked.clone()) { e } else { "You have unsaved changes.".to_string() };
-        row().h(70.0).px(16.0).center_y().gap(8.0).fill(hx("#0C0B0E")).border(1.0, line())
-            .child(text(msg).font(title(14.0, 500.0)).color(if s.pf.nag || blocked.is_some() || s.pf.error.is_some() { hx("#F0707A") } else { ink() }).grow(1.0).truncate())
-            .child(action("pf-reset", "Reset", false, !s.pf.saving, reset))
-            .child(action("pf-save", if s.pf.saving { "Saving…" } else { "Save changes" }, true, blocked.is_none() && !s.pf.saving, save))
-    } else {
-        row().h(70.0).px(16.0).center_y().gap(8.0)
-            .child(text("Profile").font(title(20.0, 600.0)).color(ink()))
-            .child(rune::icon(&LINK, 14.0).color(dim()))
-            .child(el().grow(1.0))
-            .child(row().key("settings-close").size(32.0, 32.0).radius(radius::SM).center().hover(hover())
-                .cursor(rune::Cursor::Pointer)
-                .child(rune::icon(&X, 20.0).color(dim())).on_press(close))
-    };
+/// "System default" then every device the audio system knows, with the chosen one marked.
+fn device_list(prefix: &str, devices: Option<&Vec<crate::audio::Device>>, chosen: &Option<String>,
+    default_hint: &str, choose: fn(&mut State, Option<String>)) -> El {
+    let mut list = col().gap(2.0)
+        .child(device_row(format!("{prefix}-default"), "System default".into(), default_hint.into(), chosen.is_none(),
+            Box::new(move |s| choose(s, None))));
+    match devices {
+        Some(ds) => for (i, d) in ds.iter().enumerate() {
+            let id = d.id.clone();
+            list = list.child(device_row(format!("{prefix}-{i}"), d.label.clone(), String::new(),
+                chosen.as_deref() == Some(d.id.as_str()), Box::new(move |s| choose(s, Some(id.clone())))));
+        },
+        None => list = list.child(row().h(44.0).px(12.0).center_y()
+            .child(text("Looking for devices…").font(title(13.0, 400.0)).color(dim()))),
+    }
+    list
+}
 
+fn choose_mic(s: &mut State, id: Option<String>) { s.call.set_mic(id) }
+fn choose_speaker(s: &mut State, id: Option<String>) { s.call.set_speaker(id) }
+
+fn voice_page(s: &State) -> El {
+    let cfg = &s.call.settings;
+    let dev = s.call.devices.as_ref();
+    // The settings column is narrower than 730 at the app's default window: let it shrink.
+    let hint = |words: &str| text(words.to_string()).font(title(12.5, 400.0)).color(dim()).wrap().w_full();
+    let mut inner = col().w_full().max_w(730.0).gap(0.0)
+        .child(section_head("Microphone"))
+        .child(row().h(8.0))
+        .child(hint("Your voice is sent from this device. A change takes effect at once, including in a call."))
+        .child(row().h(14.0))
+        .child(device_list("set-mic", dev.map(|d| &d.mics), &cfg.mic,
+            "Whatever input macOS is using; the choice follows it", choose_mic))
+        .child(el().w_full().h(1.0).fill(line()).my(28.0))
+        .child(section_head("Speakers"))
+        .child(row().h(8.0))
+        .child(hint("Calls, the join and leave sounds and the microphone monitor play here."))
+        .child(row().h(14.0))
+        .child(device_list("set-spk", dev.map(|d| &d.speakers), &cfg.speaker,
+            "Whatever output macOS is using; the choice follows it", choose_speaker))
+        .child(row().h(28.0))
+        .child(row().gap(12.0).center_y()
+            .child(action("set-audio-refresh", "Refresh devices", false, true, |s| s.call.refresh_devices()))
+            .child(text("Devices plugged in or out appear here.").font(title(12.5, 400.0)).color(dim())));
+    if let Some(e) = &s.call.error {
+        inner = inner.child(row().h(16.0))
+            .child(text(e.clone()).font(title(13.0, 400.0)).color(hx("#F0707A")).wrap().w_full());
+    }
+    col().w_full().py(16.0)
+        .child(row().w_full().justify_center().px(16.0).child(inner))
+        .scroll(ScrollSpec { stick_bottom: false }).grow(1.0).min_h(0.0)
+}
+
+/// A sidebar row: which settings page is open.
+fn nav_row(key: &str, label: &str, icon: &'static rune::Icon, on: bool, f: fn(&mut State)) -> El {
+    row().key(key.to_string()).h(38.0).px(8.0).gap(10.0).center_y().radius(radius::SM)
+        .fill(if on { pressed_row() } else { oklcha(0.0, 0.0, 0.0, 0.0) })
+        .hover(if on { pressed_row() } else { hover() })
+        .child(rune::icon(icon, 17.0).color(if on { ink() } else { dim() }))
+        .child(text(label.to_string()).font(title(14.0, if on { 600.0 } else { 400.0 })).color(if on { ink() } else { dim() }))
+        .cursor(rune::Cursor::Pointer).on_press(move |s: &mut State| f(s))
+}
+
+/// The profile page: type, form and live preview.
+fn profile_page(s: &State, me: &User, k: &Kit) -> El {
     // ---- profile type ----
     let kind_guild = s.pf.kind.and_then(|g| s.chat.guilds.get(g));
     let type_label = kind_guild.map_or("Global profile".to_string(), |g| g.name.clone());
@@ -578,8 +624,8 @@ pub fn dialog(s: &State) -> El {
     let form = if global {
         col().w(374.0)
             .child(field("Username", user_row))
-            .child(field("Display name", input(&s.prof[0], "Display name", me.display(), &k, |s| &mut s.prof[0])).pt(32.0))
-            .child(field("Pronouns", input(&s.prof[1], "Pronouns", "", &k, |s| &mut s.prof[1])).pt(24.0))
+            .child(field("Display name", input(&s.prof[0], "Display name", me.display(), k, |s| &mut s.prof[0])).pt(32.0))
+            .child(field("Pronouns", input(&s.prof[1], "Pronouns", "", k, |s| &mut s.prof[1])).pt(24.0))
             .child(col().gap(10.0).pt(24.0)
                 .child(label("Profile local time"))
                 .child(note("Set your time zone once so Fluxer can keep your UTC offset current when daylight saving time changes. Other people can only see your UTC offset, not your exact time zone identifier.", 374.0))
@@ -592,8 +638,8 @@ pub fn dialog(s: &State) -> El {
             .child(col().gap(10.0).pt(36.0)
                 .child(label("Banner"))
                 .child(note("Profile banners require Plutonium.", 374.0)))
-            .child(col().gap(8.0).pt(30.0).child(accent_field(s, &k)))
-            .child(col().gap(8.0).pt(24.0).child(about_field(s, &k)))
+            .child(col().gap(8.0).pt(30.0).child(accent_field(s, k)))
+            .child(col().gap(8.0).pt(24.0).child(about_field(s, k)))
     } else {
         // Editing the profile for one server: nickname + pronouns are free; avatar, banner,
         // accent and bio are Plutonium, so the media choices are radios with the custom
@@ -611,19 +657,19 @@ pub fn dialog(s: &State) -> El {
         col().w(374.0)
             .child(col().gap(8.0)
                 .child(label("Community nickname"))
-                .child(input(&s.prof[0], "Community nickname", me.display(), &k, |s| &mut s.prof[0]))
+                .child(input(&s.prof[0], "Community nickname", me.display(), k, |s| &mut s.prof[0]))
                 .child(note("This nickname will only be visible in this community", 374.0)))
-            .child(field("Pronouns", input(&s.prof[1], "Pronouns", "", &k, |s| &mut s.prof[1])).pt(24.0))
+            .child(field("Pronouns", input(&s.prof[1], "Pronouns", "", k, |s| &mut s.prof[1])).pt(24.0))
             .child(col().pt(24.0).child(plutonium_box()))
             .child(col().gap(8.0).pt(24.0).child(avatar))
             .child(col().gap(8.0).pt(24.0).child(banner_mode))
-            .child(col().gap(8.0).pt(24.0).child(accent_field(s, &k)))
-            .child(col().gap(8.0).pt(24.0).child(about_field(s, &k)))
+            .child(col().gap(8.0).pt(24.0).child(accent_field(s, k)))
+            .child(col().gap(8.0).pt(24.0).child(about_field(s, k)))
     };
 
     let customize = row().w_full().gap(58.0).items_start()
         .child(form)
-        .child(preview(s, &me));
+        .child(preview(s, me));
 
     let customize_title = if global { "Profile customization".to_string() }
         else { format!("Profile customization for {}", kind_guild.map_or("this server", |g| g.name.as_str())) };
@@ -650,9 +696,80 @@ pub fn dialog(s: &State) -> El {
         .child(text("You don't have any badges yet.").font(title(14.0, 400.0)).color(ink()))
         .child(row().h(40.0));
 
-    let page = col().w_full().py(16.0)
+    col().w_full().py(16.0)
         .child(row().w_full().justify_center().px(16.0).child(inner))
-        .scroll(ScrollSpec { stick_bottom: false }).grow(1.0).min_h(0.0);
+        .scroll(ScrollSpec { stick_bottom: false }).grow(1.0).min_h(0.0)
+}
+
+pub fn dialog(s: &State) -> El {
+    if !s.settings_open || s.chat.me.is_none() { return el().size(0.0, 0.0) }
+    let Some(me) = s.chat.me.clone() else { return el().size(0.0, 0.0) };
+    let k = fields();
+
+    // ---- sidebar ----
+    let search = row().h(32.0).px(10.0).gap(8.0).center_y().radius(radius::SM)
+        .border(1.0, hx("#3A3642"))
+        .child(rune::icon(&SEARCH, 16.0).color(dim()))
+        .child(text("Search settings...").font(title(14.0, 400.0)).color(dim()));
+    let face = row().size(40.0, 40.0)
+        .child(avatar(s, &me, 40.0))
+        .child(el().absolute(28.0, 28.0).size(12.0, 12.0).radius(6.0)
+            .fill(status_color(&s.chat.roster.status_of(&me.id))).border(2.0, pressed_row()));
+    let side_body = col().w_full().px(12.0).py(16.0).gap(2.0)
+        .child(search)
+        .child(row().h(10.0))
+        .child(row().h(44.0).px(8.0).gap(10.0).center_y().radius(radius::SM)
+            .fill(if s.pf.page == Page::Profile { pressed_row() } else { oklcha(0.0, 0.0, 0.0, 0.0) })
+            .child(face)
+            .child(col().gap(1.0)
+                .child(text(me.display().to_string()).font(title(15.0, 600.0)).color(ink()))
+                .child(row().gap(4.0).center_y()
+                    .child(rune::icon(&PENCIL, 11.0).color(dim()))
+                    .child(text("Edit your profile").font(title(13.0, 400.0)).color(dim())))
+            )
+            .cursor(rune::Cursor::Pointer).on_press(|s: &mut State| s.pf.page = Page::Profile))
+        .child(row().h(12.0))
+        .child(nav_row("set-page-profile", "Profile", &PENCIL, s.pf.page == Page::Profile, |s| s.pf.page = Page::Profile))
+        .child(nav_row("set-page-voice", "Voice & audio", &MIC, s.pf.page == Page::Voice, |s| {
+            s.pf.page = Page::Voice;
+            s.pf.type_open = false;
+            s.pf.color_open = false;
+            s.pf.emoji_open = false;
+            s.call.refresh_devices();
+        }));
+    let side = col().w(320.0).h_full().fill(sidebar_bg())
+        .child(side_body.scroll(ScrollSpec { stick_bottom: false }).grow(1.0).min_h(0.0))
+        .child(side_footer());
+
+    // ---- header: the title, or the bar about unsaved changes ----
+    let changed = dirty(s) && s.pf.page == Page::Profile;
+    let blocked = problem(s);
+    let top = if changed {
+        let msg = if s.pf.nag { "Save or reset your changes before leaving.".to_string() }
+            else if let Some(e) = s.pf.error.clone().or(blocked.clone()) { e } else { "You have unsaved changes.".to_string() };
+        row().h(70.0).px(16.0).center_y().gap(8.0).fill(hx("#0C0B0E")).border(1.0, line())
+            .child(text(msg).font(title(14.0, 500.0)).color(if s.pf.nag || blocked.is_some() || s.pf.error.is_some() { hx("#F0707A") } else { ink() }).grow(1.0).truncate())
+            .child(action("pf-reset", "Reset", false, !s.pf.saving, reset))
+            .child(action("pf-save", if s.pf.saving { "Saving…" } else { "Save changes" }, true, blocked.is_none() && !s.pf.saving, save))
+    } else {
+        let (heading, icon) = match s.pf.page {
+            Page::Profile => ("Profile", &LINK),
+            Page::Voice => ("Voice & audio", &MIC),
+        };
+        row().h(70.0).px(16.0).center_y().gap(8.0)
+            .child(text(heading).font(title(20.0, 600.0)).color(ink()))
+            .child(rune::icon(icon, 14.0).color(dim()))
+            .child(el().grow(1.0))
+            .child(row().key("settings-close").size(32.0, 32.0).radius(radius::SM).center().hover(hover())
+                .cursor(rune::Cursor::Pointer)
+                .child(rune::icon(&X, 20.0).color(dim())).on_press(close))
+    };
+
+    // ---- the page ----
+    let page = match s.pf.page {
+        Page::Profile => profile_page(s, &me, &k),
+        Page::Voice => voice_page(s),
+    };
 
     let card = row().key("settings-card").w_full().h_full().max_w(1400.0).radius(radius::LG).fill(panel())
         .border(1.0, hx("#2E2B35")).shadow(8.0, 32.0, tok::theme(true).shadow).clip_rounded(radius::LG)
@@ -666,13 +783,13 @@ pub fn dialog(s: &State) -> El {
         .child(card);
     // Floating pieces: each has a layer under it that closes it on a press elsewhere.
     let layer = |key: &str, f: fn(&mut State)| el().key(key.to_string()).pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).on_press(f);
-    if s.pf.type_open {
+    if s.pf.page == Page::Profile && s.pf.type_open {
         scrim = scrim.child(layer("pf-type-layer", |s| s.pf.type_open = false)).child(type_menu(s));
     }
-    if s.pf.color_open {
+    if s.pf.page == Page::Profile && s.pf.color_open {
         scrim = scrim.child(layer("pf-color-layer", |s| s.pf.color_open = false)).child(color_picker(s));
     }
-    if s.pf.emoji_open {
+    if s.pf.page == Page::Profile && s.pf.emoji_open {
         scrim = scrim.child(layer("pf-emoji-layer", |s| s.pf.emoji_open = false))
             .child(compose::emoji_popover(s, "pf-emoji", |s, glyph| { let t = format!("{}{glyph}", s.prof[2].text); s.prof[2] = rune::TextEdit::new(t) }));
     }

@@ -671,6 +671,25 @@ fn main() {
                 s.prof[3] = TextEdit::new("#4641D9");
                 s.pf.base = ["Muniz".into(), String::new(), "Doc, I'm from the future.".into(), "#4641D9".into()];
             }),
+            // The settings dialog's voice page, with a made-up device list (see `--scene settings-voice`).
+            ("settings-voice", |s| {
+                s.settings_open = true;
+                if let Some(me) = &mut s.chat.me {
+                    me.id = "1567191623270400000".into();
+                    me.username = "muniz".into();
+                    me.global_name = Some("Muniz".into());
+                    me.discriminator = Some("9205".into());
+                }
+                let dev = |id: &str, label: &str| crate::audio::Device { id: id.into(), label: label.into() };
+                s.call.devices = Some(crate::audio::Devices {
+                    mics: vec![dev("coreaudio:BuiltInMicrophoneDevice", "Microfone (MacBook Air)"),
+                        dev("coreaudio:AppleUSBAudioEngine:Kingston:HyperX", "HyperX Virtual Surround Sound")],
+                    speakers: vec![dev("coreaudio:BuiltInSpeakerDevice", "Alto-falantes (MacBook Air)"),
+                        dev("coreaudio:05E30224-0000-0000-071E-010380351E78", "24G2W1G4")],
+                });
+                s.call.settings.mic = Some("coreaudio:AppleUSBAudioEngine:Kingston:HyperX".into());
+                s.pf.page = crate::ui::settings::Page::Voice;
+            }),
             // Embed + video + role icon proofs (see `--scene extras`).
             ("extras", |s| {
                 use fluxer_client::api::User as U;
@@ -986,6 +1005,29 @@ mod tests {
         assert!(poll(&mut s, 0.0, &mut Tx::default()));
         assert!(s.screen == Screen::Login && s.session.is_none());
         assert!(s.auth.error.as_deref().is_some_and(|e| e.contains("sessão")));
+    }
+
+    #[test]
+    fn the_settings_dialog_lists_the_audio_devices() {
+        isolate();
+        let env = Env { system_dark: true, scale: 2.0 };
+        let mut rt = Runtime::new(State::default(), ui::view, (1100.0, 700.0), env);
+        rt.update(|s, _| {
+            s.chat.me = Some(fluxer_client::api::User { id: "1".into(), username: "eu".into(), global_name: None, avatar: None, discriminator: None });
+            s.settings_open = true;
+            s.pf.page = crate::ui::settings::Page::Voice;
+            s.call.devices = Some(crate::audio::Devices {
+                mics: vec![crate::audio::Device { id: "m1".into(), label: "Microfone".into() }],
+                speakers: vec![crate::audio::Device { id: "s1".into(), label: "Alto-falantes".into() }],
+            });
+        });
+        rt.frame(0.0);
+        assert!(rt.find("set-page-voice").is_some(), "the sidebar has the audio page");
+        assert!(rt.find("set-mic-default").is_some(), "microphone choices are listed");
+        assert!(rt.find("set-mic-0").is_some());
+        assert!(rt.find("set-spk-default").is_some(), "speaker choices are listed");
+        assert!(rt.find("set-spk-0").is_some());
+        assert!(rt.find("set-audio-refresh").is_some());
     }
 
     #[test]

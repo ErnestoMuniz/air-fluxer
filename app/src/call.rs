@@ -98,8 +98,14 @@ impl Call {
         self.fold = Fold::None;
         self.engine_send(Cmd::Meter(self.menu_open));
         if !self.menu_open { return }
+        self.refresh_devices();
+    }
+
+    /// Lists the audio devices (the menu and the settings page do it: they come and go).
+    pub fn refresh_devices(&mut self) {
         let (tx, rx) = std::sync::mpsc::channel();
         self.devices_rx = Some(rx);
+        self.devices = None;
         let wake = self.wake.clone();
         std::thread::spawn(move || { let _ = tx.send(audio::list_devices()); if let Some(w) = wake { w() } });
     }

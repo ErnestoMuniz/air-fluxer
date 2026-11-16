@@ -17,6 +17,9 @@ arm64). O áudio do sistema é o CoreAudio; o Linux continua no PulseAudio. A ch
 - **Janela** (`main.rs`, `ui.rs`): conteúdo ocupa a janela toda (sem barra de título opaca, que
   ficaria clara no tema sempre escuro do app); a rail desce 40 pt para os semáforos do macOS não
   caírem em cima do ícone de DMs. A faixa do título do AppKit continua arrastando a janela.
+- **Configurações**: página "Voice & audio" no diálogo de configurações para escolher o microfone e a
+  saída de som (System default ou um dispositivo da lista, com botão de atualizar). A escolha vale na
+  hora, inclusive dentro de uma chamada.
 - **Sobre** (`ui/settings.rs`): "macOS 26.2 (arm64)" via `sw_vers`, lido uma vez.
 - **Bundle** (`packaging/macos/`, `scripts/macos-bundle.sh`): `Fluxer.app` com `Info.plist`
   (microfone, câmera, versão), ícone gerado do `app/assets/logo.svg` e assinatura ad-hoc com
@@ -32,7 +35,7 @@ arm64). O áudio do sistema é o CoreAudio; o Linux continua no PulseAudio. A ch
 
 ## Verificado
 
-- `cargo check` e `cargo test -p fluxer-app -p fluxer-client` (81 testes no app + 1 ignorado que abre os
+- `cargo check` e `cargo test -p fluxer-app -p fluxer-client` (82 testes no app + 1 ignorado que abre os
   dispositivos, 29 no client).
 - `--snap` headless nas cenas demo e `dm`.
 - Janela real abrindo no Metal, com semáforos e menus Edit/Window do Rune; ⌘Q fecha.
