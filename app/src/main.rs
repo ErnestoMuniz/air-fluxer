@@ -623,7 +623,7 @@ fn demo_call(s: &mut State) {
 }
 
 fn main() {
-    rune::run(AppSpec::<State> {
+    let spec = AppSpec::<State> {
         scenes: &[
             ("login", |s| { s.intro = 1.0; s.screen = Screen::Login }),
             ("ip", |s| {
@@ -796,7 +796,8 @@ fn main() {
         setup: Some(setup),
         poll: Some(poll),
         ..AppSpec::new("Fluxer", (1100.0, 700.0), State::default, ui::view)
-    });
+    };
+    rune::run(spec);
 }
 
 #[cfg(test)]
@@ -836,12 +837,20 @@ mod tests {
         dispatch(&format!(r#"{{"op":0,"t":"MESSAGE_CREATE","d":{{"id":"{id}","channel_id":"{channel}","content":"{text}","author":{{"id":"2","username":"ana"}}}}}}"#))
     }
 
+    /// CPU time of this thread, so tests running beside this one don't count against it.
+    fn thread_cpu() -> std::time::Duration {
+        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: a valid timespec is handed to clock_gettime, which fills it in.
+        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+        std::time::Duration::new(ts.tv_sec.max(0) as u64, ts.tv_nsec.max(0) as u32)
+    }
+
     #[test]
     fn ten_thousand_messages_lay_out_only_the_visible_rows() {
         let mut rt = rt();
-        let t = Instant::now();
+        let t = thread_cpu();
         for _ in 0..120 { rt.frame(1.0 / 60.0); }
-        let per_frame = t.elapsed().as_secs_f64() * 1000.0 / 120.0;
+        let per_frame = (thread_cpu() - t).as_secs_f64() * 1000.0 / 120.0;
         eprintln!("idle frame cpu: {per_frame:.2} ms");
         assert!(rt.find("9999").is_some(), "stick_bottom opens on the newest message");
         assert!(rt.find("0").is_none(), "rows far from the viewport are not built");

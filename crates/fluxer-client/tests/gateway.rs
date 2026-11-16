@@ -19,9 +19,15 @@ struct Peer { ws: Ws, codec: Option<(Encoder, Decoder)> }
 
 impl Peer {
     async fn accept(l: &TcpListener, zstd: bool) -> Peer {
-        let ws = accept_async(l.accept().await.unwrap().0).await.unwrap();
-        let codec = zstd.then(|| (Encoder::new(LEVEL).unwrap(), Decoder::new().unwrap()));
-        Peer { ws, codec }
+        // Other local processes sometimes probe the port (a `HEAD /` health check, say): those
+        // connections are not ours to serve, so keep listening for the client's handshake.
+        loop {
+            let (s, _) = l.accept().await.unwrap();
+            if let Ok(ws) = accept_async(s).await {
+                let codec = zstd.then(|| (Encoder::new(LEVEL).unwrap(), Decoder::new().unwrap()));
+                return Peer { ws, codec };
+            }
+        }
     }
     async fn send(&mut self, v: serde_json::Value) {
         let text = v.to_string();

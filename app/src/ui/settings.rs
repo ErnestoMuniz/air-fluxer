@@ -466,11 +466,23 @@ fn about_field(s: &State, k: &Kit) -> El {
 
 static EXIT: rune::Icon = rune::Icon { name: "app-set-exit", view: 24.0, body: r#"<path d="M14 3.5h-9A1.5 1.5 0 0 0 3.5 5v14a1.5 1.5 0 0 0 1.5 1.5h9" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/><path d="M9.5 12h11M17 8l4 4-4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"# };
 
-/// "Linux 7.2.15-1-omarchy (x64)" from the running kernel and architecture.
+/// "macOS 26.2 (arm64)" or "Linux 7.2.15-1-omarchy (x64)"; read once, not on every frame.
 fn os_info() -> String {
-    let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease").map(|s| s.trim().to_string()).unwrap_or_default();
-    let arch = match std::env::consts::ARCH { "x86_64" => "x64", "aarch64" => "arm64", a => a };
-    if kernel.is_empty() { format!("Linux ({arch})") } else { format!("Linux {kernel} ({arch})") }
+    static INFO: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    INFO.get_or_init(|| {
+        let arch = match std::env::consts::ARCH { "x86_64" => "x64", "aarch64" => "arm64", a => a };
+        #[cfg(target_os = "macos")]
+        {
+            let version = std::process::Command::new("sw_vers").arg("-productVersion").output().ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok()).map(|s| s.trim().to_string()).unwrap_or_default();
+            if version.is_empty() { format!("macOS ({arch})") } else { format!("macOS {version} ({arch})") }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease").map(|s| s.trim().to_string()).unwrap_or_default();
+            if kernel.is_empty() { format!("Linux ({arch})") } else { format!("Linux {kernel} ({arch})") }
+        }
+    }).clone()
 }
 
 /// The sidebar's bottom: sign out, build/technology/OS facts, and the legal links.

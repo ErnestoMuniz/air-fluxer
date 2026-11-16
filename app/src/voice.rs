@@ -1,7 +1,8 @@
-//! Voice chat media: a LiveKit room on its own thread. Both directions go through PulseAudio
-//! (PipeWire serves it) so the app controls them: the microphone is read here, scaled, cleaned with
-//! RNNoise and pushed into the room as a native audio source; every remote voice is played on a
-//! stream of its own with the output volume and deafening applied.
+//! Voice chat media: a LiveKit room on its own thread. Both directions go through the system's
+//! audio service (CoreAudio on macOS, PulseAudio on Linux) so the app controls them: the
+//! microphone is read here, scaled, cleaned with RNNoise and pushed into the room as a native
+//! audio source; every remote voice is played on a stream of its own with the output volume and
+//! deafening applied.
 //!
 //! The gateway side (joining a channel, the server's token) lives in `call.rs`; this module gets
 //! an endpoint and a token and does the rest.
@@ -149,24 +150,17 @@ fn level_of(pcm: &[i16]) -> u32 {
 
 /// `frames` None only measures the level.
 fn start_capture(device: Option<String>, shared: Arc<Shared>, frames: Option<UnboundedSender<Vec<i16>>>) -> Capture {
-    use libpulse_binding::def::BufferAttr;
-    use libpulse_binding::sample::{Format, Spec};
-    use libpulse_binding::stream::Direction;
-    use libpulse_simple_binding::Simple;
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
     std::thread::Builder::new().name("fluxer-mic".into()).spawn(move || {
-        let spec = Spec { format: Format::S16NE, channels: 1, rate: 48_000 };
-        let attr = BufferAttr { maxlength: u32::MAX, tlength: u32::MAX, prebuf: u32::MAX, minreq: u32::MAX, fragsize: (FRAME * 2) as u32 };
-        let open = |dev: Option<&str>| Simple::new(None, "Fluxer", Direction::Record, dev, "Voice", &spec, None, Some(&attr)).ok();
-        let Some(simple) = open(device.as_deref()).or_else(|| if device.is_some() { open(None) } else { None }) else {
+        let Some(mut mic) = audio::open_mic(device.as_deref()) else {
             eprintln!("fluxer: could not open the microphone {device:?}");
             return;
         };
         let mut rnn = DenoiseState::new();
         let (mut bytes, mut input, mut output) = ([0u8; FRAME * 2], [0f32; FRAME], [0f32; FRAME]);
         while !flag.load(Ordering::Relaxed) {
-            if simple.read(&mut bytes).is_err() { break }
+            if mic.read(&mut bytes).is_err() { break }
             let mut pcm: Vec<i16> = bytes.chunks_exact(2).map(|b| i16::from_ne_bytes([b[0], b[1]])).collect();
             scale(&mut pcm, shared.in_gain());
             if shared.denoise.load(Ordering::Relaxed) { denoise_frame(&mut rnn, &mut pcm, &mut input, &mut output) }

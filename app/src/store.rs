@@ -23,6 +23,9 @@ pub struct Saved {
 pub fn dir() -> Option<PathBuf> {
     // Tests and portable setups point this elsewhere so they never touch a real session.
     if let Some(d) = std::env::var_os("FLUXER_RUX_CONFIG_DIR") { return Some(PathBuf::from(d)) }
+    #[cfg(target_os = "macos")]
+    let base = std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library").join("Application Support"))?;
+    #[cfg(not(target_os = "macos"))]
     let base = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
     Some(base.join("fluxer-rune"))

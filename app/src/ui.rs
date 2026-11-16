@@ -232,7 +232,10 @@ fn guild_rail(s: &State) -> El {
     let dm_lit = dm_sel || hov("rail-dm");
     let dms = row().size(48.0, 48.0).radius(radius_of(dm_sel, "rail-dm")).fill(if dm_lit { p.brand } else { p.input }).center()
         .child(rune::icon(&CHAT_CIRCLE, 26.0).color(if dm_lit { t.knob } else { t.text }));
-    let mut rail = col().w(RAIL_WIDTH).h_full().pt(12.0).pb(DOCK_USER_H + 24.0 + if s.call.active() { DOCK_CALL_H } else { 0.0 }).gap(8.0).fill(p.rail)
+    let mut rail = col().w(RAIL_WIDTH).h_full()
+        // macOS draws the traffic lights over the top-left of the content: leave them the room.
+        .pt(if cfg!(target_os = "macos") { 40.0 } else { 12.0 })
+        .pb(DOCK_USER_H + 24.0 + if s.call.active() { DOCK_CALL_H } else { 0.0 }).gap(8.0).fill(p.rail)
         .child(tile("rail-dm".into(), dm_sel, s.chat.unread(None), s.chat.has_new(None), false, dms, Box::new(|s| open_guild(s, None))))
         .child(row().w_full().h(2.0).px(24.0).child(el().w_full().h(2.0).radius(1.0).fill(p.line)));
     for i in 0..s.chat.guilds.len() {

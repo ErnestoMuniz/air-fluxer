@@ -7,8 +7,13 @@ use serde_json::{Value, json};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let dir = std::env::var("FLUXER_RUX_CONFIG_DIR").map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from(std::env::var("HOME").unwrap()).join(".config/fluxer-rune"));
+    let dir = std::env::var("FLUXER_RUX_CONFIG_DIR").map(std::path::PathBuf::from).unwrap_or_else(|_| {
+        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
+        #[cfg(target_os = "macos")]
+        { home.join("Library/Application Support/fluxer-rune") }
+        #[cfg(not(target_os = "macos"))]
+        { home.join(".config/fluxer-rune") }
+    });
     let saved: Value = serde_json::from_slice(&std::fs::read(dir.join("session.json")).expect("no saved session")).unwrap();
     let gateway = saved["gateway"].as_str().unwrap().to_string();
     println!("gateway url: {gateway}");
@@ -16,7 +21,7 @@ async fn main() {
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let (o, out) = tokio::sync::mpsc::channel(4);
     let cfg = Config { gateway, api_version: 1, compression };
-    let props = json!({"os": "linux", "browser": "fluxer-rune", "device": "fluxer-rune"});
+    let props = json!({"os": std::env::consts::OS, "browser": "fluxer-rune", "device": "fluxer-rune"});
     let saved3 = saved.clone();
     tokio::spawn(run(cfg, Session::new(saved["token"].as_str().unwrap(), props), tx, out));
     let deadline = tokio::time::sleep(std::time::Duration::from_secs(15));

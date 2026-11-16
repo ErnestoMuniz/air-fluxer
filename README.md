@@ -3,7 +3,8 @@
 A native client for the Fluxer chat service, written in Rust on [Rune](https://github.com/anomalyco/rune),
 a GPU UI framework. Sign-in (with e-mail authorization and two-factor), servers and direct messages, live
 messages and history, replies, reactions, mentions, embeds, GIFs and video clips, uploads, the GIF, sticker and
-emoji pickers, profiles, and voice calls (LiveKit, PulseAudio, RNNoise noise suppression, screen shares).
+emoji pickers, profiles, and voice calls (LiveKit, CoreAudio on macOS and PulseAudio on Linux, RNNoise noise
+suppression, screen shares).
 
 ```
 app/                the application (`fluxer-app`)
@@ -21,14 +22,26 @@ mkdir -p ref && git clone https://github.com/anomalyco/rune ref/rune
 git -C ref/rune checkout ea6ddf8
 ```
 
-You also need a Rust toolchain (see `rust-toolchain.toml`), `clang` (the C++ glue of libwebrtc is built with it,
-see `.cargo/config.toml`) and the PulseAudio client library (`libpulse`).
+You also need a Rust toolchain (see `rust-toolchain.toml`) and `clang` (the C++ glue of libwebrtc is built with it,
+see `.cargo/config.toml`). On Linux, also the PulseAudio client library (`libpulse`). macOS uses the system's
+CoreAudio and needs no extra packages; the first voice call asks for microphone access.
 
 ```sh
 cargo run --release -p fluxer-app           # the app
 FLUXER_DEMO=1 cargo run --release -p fluxer-app   # with made-up data, no account
 cargo test -p fluxer-app -p fluxer-client
 ```
+
+### macOS app
+
+```sh
+scripts/macos-bundle.sh                     # → target/release/Fluxer.app
+open target/release/Fluxer.app
+```
+
+The bundle carries the microphone and camera usage strings and is ad-hoc signed, which is enough to run it
+on this Mac. Shipping it to other people also needs a Developer ID signature and notarisation. See
+`docs/APPLE.md` for what the macOS port does and what is still missing.
 
 ## Looking at it without a window
 
@@ -40,8 +53,8 @@ cargo test -p fluxer-app -p fluxer-client
 
 | | |
 |---|---|
-| session, last place, preferences, audio settings | `~/.config/fluxer-rune/` (`FLUXER_RUX_CONFIG_DIR`) |
-| downloaded pictures (cut down to 256 MB at launch) | `~/.cache/fluxer-rune/media/` (`FLUXER_RUX_CACHE_DIR`) |
+| session, last place, preferences, audio settings | `~/Library/Application Support/fluxer-rune/` on macOS, `~/.config/fluxer-rune/` on Linux (`FLUXER_RUX_CONFIG_DIR`) |
+| downloaded pictures (cut down to 256 MB at launch) | `~/Library/Caches/fluxer-rune/media/` on macOS, `~/.cache/fluxer-rune/media/` on Linux (`FLUXER_RUX_CACHE_DIR`) |
 
 ## Memory and CPU
 
