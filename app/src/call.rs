@@ -281,7 +281,10 @@ impl Call {
     }
 
     /// Starts or stops publishing this Mac's screen to the call.
-    pub fn toggle_screen_share(&mut self) { self.engine_send(Cmd::ShareScreen(!self.sharing)) }
+    pub fn toggle_screen_share(&mut self) {
+        self.error = None;
+        self.engine_send(Cmd::ShareScreen(!self.sharing));
+    }
 
     /// `VOICE_SERVER_UPDATE`: where to connect.
     pub fn on_server_update(&mut self, d: &Value) {

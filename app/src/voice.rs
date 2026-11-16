@@ -140,9 +140,9 @@ async fn start_screen(room: &Room) -> Result<Screen, String> {
             fn CGRequestScreenCaptureAccess() -> bool;
         }
         // SAFETY: plain CoreGraphics C functions with no arguments.
-        if !unsafe { CGPreflightScreenCaptureAccess() } {
-            unsafe { CGRequestScreenCaptureAccess(); }
-            return Err("Permita a Gravação de Tela em Ajustes do Sistema → Privacidade e Segurança e reabra o app.".into());
+        let granted = unsafe { CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() };
+        if !granted {
+            return Err("Permita a Gravação de Tela em Ajustes do Sistema → Privacidade e Segurança e clique de novo (o macOS pode pedir para reabrir o app).".into());
         }
     }
     let source = NativeVideoSource::new(VideoResolution { width: 1920, height: 1080 }, true);

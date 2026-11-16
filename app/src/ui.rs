@@ -421,16 +421,23 @@ fn dock(s: &State) -> El {
             }
             faces = faces.child(opens_profile(f, user, format!("df-{}", v.user_id)));
         }
+        let sharing = c.sharing;
         card = card.child(col().key("voice-section").h(DOCK_CALL_H).px(14.0).py(10.0).gap(6.0)
             .child(row().h(30.0).center_y().gap(8.0)
                 .child(row().key("voice-signal").size(16.0, 16.0).center()
                     .child(rune::icon(&SIGNAL, 16.0).color(GREEN()))
                     .on_hover_change(|s: &mut State, inside, _| s.call.ping_tip = inside))
                 .child(text(if connected { "In voice chat" } else { "Connecting…" }).font(type_::TITLE).color(GREEN()).grow(1.0))
+                .child(if sharing { row().key("sharing-live").h(16.0).px(6.0).radius(4.0).fill(GREEN()).center()
+                    .child(text("LIVE").font(type_::SECTION).color(t.knob)) } else { el().size(0.0, 0.0) })
                 .child(icon_btn("screen-toggle", s.call.sharing, false, &SCREEN, |s| s.call.toggle_screen_share()))
                 .child(icon_btn("noise-toggle", s.call.settings.noise_suppression, false, &WAVEFORM, |s| { let on = !s.call.settings.noise_suppression; s.call.set_noise_suppression(on) }))
                 .child(icon_btn("voice-leave", false, false, &HANG_UP, leave_voice)))
-            .child(text(place).font(type_::LABEL).color(t.text_secondary).truncate().w(dock_w(s) - 28.0))
+            .child(match &c.error {
+                Some(e) => text(e.clone()).key("voice-note").font(type_::LABEL).color(p.unread).wrap().w(dock_w(s) - 28.0),
+                None => text(if sharing { format!("Compartilhando a tela — {place}") } else { place })
+                    .key("voice-note").font(type_::LABEL).color(if sharing { GREEN() } else { t.text_secondary }).truncate().w(dock_w(s) - 28.0),
+            })
             .child(faces));
         card = card.child(el().w_full().h(1.0).fill(p.line));
     } else if let Some(e) = &c.error {
