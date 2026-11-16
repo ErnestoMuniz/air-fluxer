@@ -35,12 +35,16 @@ pub struct Settings {
     pub user_volume: std::collections::HashMap<String, f32>,
     #[serde(default)]
     pub muted_users: Vec<String>,
+    /// Tallest frame a screen share is sent at: 720 or 1080 (4K screens are scaled down).
+    #[serde(default = "hd")]
+    pub share_height: u32,
 }
 
 fn one() -> f32 { 1.0 }
+fn hd() -> u32 { 1080 }
 
 impl Default for Settings {
-    fn default() -> Self { Settings { mic: None, speaker: None, noise_suppression: true, input_volume: 1.0, output_volume: 1.0, user_volume: Default::default(), muted_users: vec![] } }
+    fn default() -> Self { Settings { mic: None, speaker: None, noise_suppression: true, input_volume: 1.0, output_volume: 1.0, user_volume: Default::default(), muted_users: vec![], share_height: 1080 } }
 }
 
 /// Values the audio threads read while they run, so a slider or a switch takes effect at once.

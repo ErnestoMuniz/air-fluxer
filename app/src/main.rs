@@ -218,9 +218,10 @@ fn demo_chat() -> Chat {
 
 impl Default for State {
     fn default() -> Self {
+        let prefs = prefs::load();
         State {
             rail_hover: None, settings_open: false, pf: Default::default(), prof: [TextEdit::new(""), TextEdit::new(""), TextEdit::new(""), TextEdit::new("")],
-            picker: Default::default(), prefs: prefs::load(), plus_open: false, msg_hover: None, react_picker: None, highlighted: None, pointer: rune::Live::new([0.0, 0.0]), member_search: TextEdit::new(""), my_status: "online".into(), status_menu: false, video: None, customize_open: false, notice: None,
+            picker: Default::default(), prefs: prefs.clone(), plus_open: false, msg_hover: None, react_picker: None, highlighted: None, pointer: rune::Live::new([0.0, 0.0]), member_search: TextEdit::new(""), my_status: prefs.status, status_menu: false, video: None, customize_open: false, notice: None,
             ctx: None, msg_menu: None, draft_mode: Draft { reply: None, editing: None }, acked: None, search: Default::default(), pending_jump: None, incoming_call: None, profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
             intro: 0.0, intro_t0: None, chat: demo_chat(), net: net::Net::default(), draft: TextEdit::new(""), gateway: None, subscribed: None, synced_guilds: Default::default(), show_members: true, call: Default::default(), focused: true, visible: 0..0, typing_wake: false, thumb: Default::default(),
         }
@@ -627,6 +628,8 @@ pub fn toggle_deafen(s: &mut State) { s.call.toggle_deafen(s.gateway.as_ref()) }
 /// Changes what status this account shows (the gateway tells everyone else; invisible looks offline).
 pub fn set_status(s: &mut State, status: &str) {
     s.my_status = status.to_string();
+    s.prefs.status = status.to_string();
+    crate::prefs::save(&s.prefs);
     if let Some(me) = &s.chat.me { s.chat.roster.status.insert(me.id.clone(), status.to_string()); }
     if let Some(gw) = &s.gateway {
         gw.send(Payload { op: Opcode::PRESENCE_UPDATE, d: Some(serde_json::json!({ "status": status })), s: None, t: None });

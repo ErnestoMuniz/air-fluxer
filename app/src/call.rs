@@ -283,7 +283,13 @@ impl Call {
     /// Starts or stops publishing this Mac's screen to the call.
     pub fn toggle_screen_share(&mut self) {
         self.error = None;
-        self.engine_send(Cmd::ShareScreen(!self.sharing));
+        self.engine_send(Cmd::ShareScreen(!self.sharing, self.settings.share_height));
+    }
+
+    /// How tall a shared frame may be (720 or 1080), saved with the audio settings.
+    pub fn set_share_height(&mut self, height: u32) {
+        self.settings.share_height = height.clamp(360, 2160);
+        audio::save(&self.settings);
     }
 
     /// `VOICE_SERVER_UPDATE`: where to connect.

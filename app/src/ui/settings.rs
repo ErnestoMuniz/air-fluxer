@@ -641,6 +641,19 @@ fn voice_page(s: &State) -> El {
                 .child(if cfg.noise_suppression { rune::icon(&CHECK, 12.0).color(Color::WHITE) } else { el().size(0.0, 0.0) }))
             .cursor(rune::Cursor::Pointer)
             .on_press(|s: &mut State| { let on = !s.call.settings.noise_suppression; s.call.set_noise_suppression(on) }))
+        .child(row().h(14.0))
+        .child(row().center_y()
+            .child(col().gap(1.0).grow(1.0)
+                .child(text("Screen share quality").font(title(14.0, 500.0)).color(ink()))
+                .child(text("4K screens are scaled down to this").font(title(12.0, 400.0)).color(dim())))
+            .child({ let pill = |h: u32| {
+                let on = cfg.share_height == h;
+                row().key(format!("share-{h}")).h(28.0).px(10.0).radius(radius::SM).center()
+                    .fill(if on { accent() } else { field_bg() })
+                    .child(text(format!("{h}p")).font(title(13.0, 600.0)).color(if on { Color::WHITE } else { ink() }))
+                    .cursor(rune::Cursor::Pointer).on_press(move |s: &mut State| s.call.set_share_height(h))
+            };
+            row().gap(6.0).child(pill(720)).child(pill(1080)) }))
         .child(row().h(28.0))
         .child(row().gap(12.0).center_y()
             .child(action("set-audio-refresh", "Refresh devices", false, true, |s| s.call.refresh_devices()))

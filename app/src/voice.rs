@@ -43,7 +43,7 @@ pub enum Cmd {
     /// Keep the microphone open only to measure its level (the settings menu), outside a call.
     Meter(bool),
     /// Publish this Mac's screen (the system picker on macOS chooses what to share).
-    ShareScreen(bool),
+    ShareScreen(bool, u32),
     Disconnect,
 }
 
@@ -130,7 +130,7 @@ struct Screen { sid: TrackSid, stop: Arc<AtomicBool> }
 impl Drop for Screen { fn drop(&mut self) { self.stop.store(true, Ordering::Relaxed) } }
 
 /// Captures the screen (the macOS picker chooses what) and publishes it as a screen-share track.
-async fn start_screen(room: &Room) -> Result<Screen, String> {
+async fn start_screen(room: &Room, height: u32) -> Result<Screen, String> {
     #[cfg(target_os = "macos")]
     {
         // Screen Recording is a TCC permission: ask before touching ScreenCaptureKit, so the system
@@ -145,7 +145,8 @@ async fn start_screen(room: &Room) -> Result<Screen, String> {
             return Err("Permita a Gravação de Tela em Ajustes do Sistema → Privacidade e Segurança e clique de novo (o macOS pode pedir para reabrir o app).".into());
         }
     }
-    let source = NativeVideoSource::new(VideoResolution { width: 1920, height: 1080 }, true);
+    let max_h = height.clamp(360, 2160);
+    let source = NativeVideoSource::new(VideoResolution { width: max_h * 16 / 9, height: max_h }, true);
     let track = LocalVideoTrack::create_video_track("screen", RtcVideoSource::Native(source.clone()));
     let publish = TrackPublishOptions { source: TrackSource::Screenshare, ..Default::default() };
     let publication = room.local_participant().publish_track(LocalTrack::Video(track), publish).await
@@ -170,9 +171,13 @@ async fn start_screen(room: &Room) -> Result<Screen, String> {
             let (sy, su, sv) = buffer.strides();
             let (y, u, v) = buffer.data_mut();
             yuv_helper::abgr_to_i420(frame.data(), frame.stride(), y, sy, u, su, v, sv, w, h);
-            // 1080p at most: a 4K/5K screen would cost more than the encoder can send.
-            let buffer = if w > 1920 || h > 1080 {
-                let (sw, sh) = if w * 1080 >= h * 1920 { (1920, (h * 1920 / w).max(2) & !1) } else { ((w * 1080 / h).max(2) & !1, 1080) };
+            // The chosen quality at most: a 4K/5K screen costs more than the encoder can send.
+            let max_w = (max_h * 16 / 9) as i32;
+            let max_hi = max_h as i32;
+            let buffer = if w > max_w || h > max_hi {
+                let (sw, sh) = if w * max_hi >= h * max_w {
+                    (max_w, (h * max_w / w).max(2) & !1)
+                } else { ((w * max_hi / h).max(2) & !1, max_hi) };
                 buffer.scale(sw, sh)
             } else { buffer };
             source.capture_frame(&VideoFrame::new(VideoRotation::VideoRotation0, buffer));
@@ -439,11 +444,11 @@ async fn engine(mut cmds: UnboundedReceiver<Cmd>, out: mpsc::Sender<Ev>, wake: W
                         meter = None;
                         if on && live.is_none() { meter = Some(start_capture(mic_choice.clone(), shared.clone(), None)) }
                     }
-                    Cmd::ShareScreen(on) => {
+                    Cmd::ShareScreen(on, height) => {
                         let Some(l) = live.as_mut() else { continue };
                         if on {
                             if l.screen.is_none() {
-                                match start_screen(&l.room).await {
+                                match start_screen(&l.room, height).await {
                                     Ok(s) => { l.screen = Some(s); send(Ev::Sharing(true)) }
                                     Err(e) => send(Ev::Notice(e)),
                                 }
