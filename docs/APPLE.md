@@ -24,10 +24,15 @@ arm64). O áudio do sistema é o CoreAudio; o Linux continua no PulseAudio. A ch
 - **Testes**: o gateway falso ignora conexões que não são handshake WebSocket (scanners locais
   derrubavam o teste de reconexão); o teste de custo de frame mede CPU da thread, não parede,
   então outros testes rodando em paralelo não o fazem falhar.
+- **WebRTC/macOS**: as categorias Objective-C do libwebrtc (por exemplo
+  `+[NSString stringForStdString:]`) vivem numa biblioteca estática. Sem `-ObjC` o linker as
+  descarta e criar a `PeerConnectionFactory` aborta com SIGABRT na hora de entrar numa call
+  (`+[NSString stringForStdString:]: unrecognized selector`). `app/build.rs` passa a flag no
+  macOS; há um teste que cria a factory contra um endpoint morto para não regredir.
 
 ## Verificado
 
-- `cargo check` e `cargo test -p fluxer-app -p fluxer-client` (80 testes no app + 1 ignorado que abre os
+- `cargo check` e `cargo test -p fluxer-app -p fluxer-client` (81 testes no app + 1 ignorado que abre os
   dispositivos, 29 no client).
 - `--snap` headless nas cenas demo e `dm`.
 - Janela real abrindo no Metal, com semáforos e menus Edit/Window do Rune; ⌘Q fecha.

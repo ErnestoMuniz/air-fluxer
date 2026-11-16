@@ -416,6 +416,19 @@ async fn connect(endpoint: &str, token: &str, e2ee_key: Option<String>, muted: b
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn creating_the_webrtc_factory_does_not_abort_on_this_platform() {
+        // macOS used to abort here: WebRTC's `+[NSString stringForStdString:]` category was not
+        // linked (see app/build.rs). A dead endpoint must produce an error, not a crash.
+        let shared = crate::audio::Shared::new(&Settings::default());
+        let r = tokio::time::timeout(std::time::Duration::from_secs(10),
+            connect("wss://127.0.0.1:9", "not-a-token", None, true, Settings::default(), shared)).await;
+        match r {
+            Ok(r) => assert!(r.is_err(), "a dead endpoint must not produce a room"),
+            Err(_) => eprintln!("the dead endpoint kept retrying; the factory was created"),
+        }
+    }
+
     #[test]
     fn rnnoise_processes_frames_and_takes_energy_out_of_hiss() {
         let mut rnn = DenoiseState::new();
