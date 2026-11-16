@@ -60,7 +60,7 @@ pub struct Search {
     pub open: bool,
     pub input: TextEdit,
     pub query: String,
-    pub results: Vec<Msg>,
+    pub results: Vec<fluxer_client::api::Message>,
     pub loading: bool,
     pub indexing: bool,
     pub error: Option<String>,
@@ -74,11 +74,13 @@ pub fn run_search(s: &mut State) {
     let Some(cid) = s.chat.channel_id().map(String::from) else { return };
     let q = s.search.input.text.trim().to_string();
     if q.is_empty() { return }
+    let guild = s.chat.nav.guild.and_then(|g| s.chat.guilds.get(g)).map(|g| g.id.clone());
     s.search.query = q.clone();
     s.search.loading = true;
     s.search.indexing = false;
     s.search.error = None;
-    s.net.search(&cid, &q);
+    // A server is searched as a whole; a DM channel has no server, so it searches itself.
+    if guild.is_some() { s.net.search(guild.as_deref(), None, &q) } else { s.net.search(None, Some(&cid), &q) }
 }
 
 fn on_search(s: &mut State, query: String, res: Result<fluxer_client::api::SearchOutcome, String>) {
@@ -86,8 +88,22 @@ fn on_search(s: &mut State, query: String, res: Result<fluxer_client::api::Searc
     s.search.loading = false;
     match res {
         Ok(fluxer_client::api::SearchOutcome::Indexing) => { s.search.indexing = true; s.search.results.clear() }
-        Ok(fluxer_client::api::SearchOutcome::Hits(msgs)) => { s.search.results = msgs.into_iter().map(Into::into).collect() }
+        Ok(fluxer_client::api::SearchOutcome::Hits(msgs)) => s.search.results = msgs,
         Err(e) => s.search.error = Some(e),
+    }
+}
+
+/// A search hit was pressed: open its channel and put it in the middle of the list.
+pub fn open_search_hit(s: &mut State, tx: &mut Tx, channel: &str, id: &str) {
+    s.search.open = false;
+    if s.chat.channel_id() != Some(channel) && !s.chat.open_channel_by_id(channel) { return }
+    s.visible = 0..0;
+    reconcile(s);
+    if s.chat.logs.get(channel).is_some_and(|l| l.msgs.iter().any(|m| m.id == id)) {
+        jump_to(s, tx, id);
+    } else {
+        s.pending_jump = Some((channel.to_string(), id.to_string()));
+        s.net.history_around(channel, id);
     }
 }
 
@@ -124,6 +140,8 @@ pub struct State {
     acked: Option<(String, String)>,
     /// The channel search (header magnifier).
     pub search: Search,
+    /// A message to center once its around-page arrives (a search hit outside the loaded history).
+    pending_jump: Option<(String, String)>,
     pub profile: Option<Prof>,
     /// Profiles fetched so far, by `net::profile_key`.
     pub profiles: std::collections::HashMap<String, fluxer_client::api::Profile>,
@@ -198,7 +216,7 @@ impl Default for State {
         State {
             rail_hover: None, settings_open: false, pf: Default::default(), prof: [TextEdit::new(""), TextEdit::new(""), TextEdit::new(""), TextEdit::new("")],
             picker: Default::default(), prefs: prefs::load(), plus_open: false, msg_hover: None, react_picker: None, highlighted: None, pointer: rune::Live::new([0.0, 0.0]), member_search: TextEdit::new(""), video: None, customize_open: false, notice: None,
-            ctx: None, msg_menu: None, draft_mode: Draft { reply: None, editing: None }, acked: None, search: Default::default(), profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
+            ctx: None, msg_menu: None, draft_mode: Draft { reply: None, editing: None }, acked: None, search: Default::default(), pending_jump: None, profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
             intro: 0.0, intro_t0: None, chat: demo_chat(), net: net::Net::default(), draft: TextEdit::new(""), gateway: None, subscribed: None, synced_guilds: Default::default(), show_members: true, call: Default::default(), focused: true, visible: 0..0, typing_wake: false, thumb: Default::default(),
         }
     }
@@ -412,6 +430,12 @@ fn on_net(s: &mut State, d: net::Done) -> bool {
         net::Done::AvatarSaved(res) => { ui::settings::on_avatar(s, res); true }
         net::Done::TimezoneSaved(res) => { ui::settings::on_timezone(s, res); true }
         net::Done::Search { query, res } => { on_search(s, query, res); true }
+        net::Done::HistoryAround { channel, target, res: Ok(msgs) } => {
+            s.chat.load_around(&channel, msgs);
+            s.pending_jump = Some((channel, target));
+            true
+        }
+        net::Done::HistoryAround { res: Err(e), .. } => { s.notice = Some(format!("Não foi possível abrir a mensagem: {e}")); true }
         net::Done::Profile { key, res: Ok(p) } => {
             if let (Some(media), Some(h)) = (s.chat.media.clone(), p.banner.as_deref()) {
                 if let Some(uid) = key.split('@').next() { s.net.want_image_first(&fluxer_client::api::banner_still_url(&media, uid, h, 600)) }
@@ -511,6 +535,11 @@ fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
     if std::mem::take(&mut s.typing_wake) { tx.wake_after(std::time::Duration::from_millis(roster::TYPING_TTL_MS as u64 + 250)) }
     let images_before = s.net.busy_with_images();
     for d in s.net.drain() { changed |= on_net(s, d) }
+    // A search hit's around-page arrived: center it now that its row exists.
+    if let Some((channel, id)) = s.pending_jump.take() {
+        if s.chat.channel_id() == Some(channel.as_str()) { tx.scroll_center(format!("rows/{id}")) }
+        else { s.pending_jump = Some((channel, id)) }
+    }
     changed |= s.call.poll(s.gateway.as_ref());
     if s.picker.poll() { picker_images(s); changed = true }
     // A finished download changes what draws; so does a queue that just emptied.
@@ -1231,7 +1260,7 @@ mod tests {
         rt.update(|s, _| {
             s.search.open = true;
             let me = s.chat.me.clone().expect("demo user");
-            s.search.results = vec![Msg::local("found".into(), me, "achado".into(), Delivery::Sent)];
+            s.search.results = vec![fluxer_client::api::Message::plain("found", "demo-0", "achado", me)];
         });
         rt.frame(0.0);
         assert!(rt.find("search-input").is_some());

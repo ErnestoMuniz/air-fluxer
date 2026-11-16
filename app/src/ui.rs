@@ -116,6 +116,8 @@ fn login_view(s: &State) -> El {
     } else {
         form = form
             .child(title("Welcome back"))
+            .child(labelled("Instance", TextInput::new(&a.instance).height(38.0).label("Instance").width(Some(W))
+                .on_edit(|s: &mut State| &mut s.auth.instance).on_submit(|s: &mut State, _| submit(s)).build(k)))
             .child(labelled("Email", TextInput::new(&a.identifier).height(44.0).label("Email").width(Some(W))
                 .on_edit(|s: &mut State| &mut s.auth.identifier).on_submit(|s: &mut State, _| submit(s)).build(k)))
             .child(labelled("Password", TextInput::new(&a.password).height(44.0).label("Password").secure().width(Some(W))
@@ -1278,20 +1280,20 @@ fn search_view(s: &State) -> El {
     } else {
         let now = crate::clock::now_ms();
         for m in &s.search.results {
-            let id = m.id.clone();
-            let loaded = s.chat.log().is_some_and(|l| l.msgs.iter().any(|q| q.id == id));
+            let (cid, id) = (m.channel_id.clone(), m.id.clone());
+            let chan = s.chat.guilds.iter().flat_map(|g| g.channels.iter()).chain(s.chat.dms.iter())
+                .find(|c| c.id == cid).map(|c| c.name.clone()).unwrap_or_default();
             body = body.child(row().key(format!("sr-{id}")).w_full().px(10.0).py(8.0).gap(10.0).items_start()
                 .radius(radius::SM).hover(p.hover)
                 .child(avatar(s, &m.author, 26.0))
                 .child(col().gap(2.0).grow(1.0).min_w(0.0)
                     .child(row().gap(8.0).center_y()
                         .child(text(m.author.display().to_string()).font(type_::TITLE).color(t.text))
-                        .child(text(m.ts.map(|ts| crate::clock::full(ts, now)).unwrap_or_default()).font(type_::LABEL).color(t.text_secondary)))
-                    .child(text(m.body.clone()).font(type_::BODY).color(t.text).truncate()))
-                .cursor(rune::Cursor::Pointer).on_press_tx(move |s: &mut State, tx: &mut rune::Tx| {
-                    s.search.open = false;
-                    if loaded { crate::jump_to(s, tx, &id) } else { s.notice = Some("Essa mensagem está fora do trecho carregado do histórico.".into()) }
-                }));
+                        .child(text(if chan.is_empty() { String::new() } else { format!("#{chan}") }).font(type_::LABEL).color(t.text_secondary))
+                        .child(text(m.timestamp.map(|ts| crate::clock::full(ts, now)).unwrap_or_default()).font(type_::LABEL).color(t.text_secondary)))
+                    .child(text(m.content.clone()).font(type_::BODY).color(t.text).truncate()))
+                .cursor(rune::Cursor::Pointer)
+                .on_press_tx(move |s: &mut State, tx: &mut rune::Tx| crate::open_search_hit(s, tx, &cid, &id)));
         }
     }
     col().w_full().h_full().child(bar).child(el().w_full().h(1.0).fill(p.line))

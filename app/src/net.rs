@@ -104,6 +104,8 @@ pub enum Done {
     /// Messages matching a channel search; the query is echoed so a late answer for an older
     /// query does not replace the newer results.
     Search { query: String, res: Result<api::SearchOutcome, String> },
+    /// A page centered on a message (a search hit outside the loaded history).
+    HistoryAround { channel: String, target: String, res: Result<Vec<Message>, String> },
     Profile { key: String, res: Result<api::Profile, String> },
     /// A message sent without a local copy (a sticker): the gateway brings it back; only failures matter.
     Posted(Result<(), String>),
@@ -241,12 +243,22 @@ impl Net {
         self.job(move || api.ack(&c, &m).map_err(|e| e.message), Done::Acked);
     }
 
-    /// Searches the open channel's messages.
-    pub fn search(&self, channel: &str, query: &str) {
+    /// Searches the server (`guild`) or a single channel.
+    pub fn search(&self, guild: Option<&str>, channel: Option<&str>, query: &str) {
         let Some(api) = self.api.clone() else { return };
-        let (c, q) = (channel.to_string(), query.to_string());
+        let (g, c, q) = (guild.map(String::from), channel.map(String::from), query.to_string());
         let echo = q.clone();
-        self.job(move || api.search(&c, &q).map_err(|e| e.message), move |res| Done::Search { query: echo, res });
+        self.job(move || api.search(g.as_deref(), c.as_deref(), &q).map_err(|e| e.message),
+            move |res| Done::Search { query: echo, res });
+    }
+
+    /// Loads the page around `target` when a search hit is not in the loaded history.
+    pub fn history_around(&self, channel: &str, target: &str) {
+        let Some(api) = self.api.clone() else { return };
+        let (c, t) = (channel.to_string(), target.to_string());
+        let (cc, tt) = (c.clone(), t.clone());
+        self.job(move || api.messages_around(&c, &t, crate::model::PAGE as u32).map_err(|e| e.message),
+            move |res| Done::HistoryAround { channel: cc, target: tt, res });
     }
 
     /// Sets (a base64 PNG) or removes the account's avatar.

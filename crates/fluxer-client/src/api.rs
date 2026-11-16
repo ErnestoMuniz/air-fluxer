@@ -461,16 +461,14 @@ impl Api {
         if (200..300).contains(&status) { Ok(()) } else { Err(failure(&crate::rest::Reply { status, body })) }
     }
 
-    /// Messages of `channel_id` matching `query`, newest first (`/search/messages`); `Indexing`
-    /// while the server builds its index.
-    pub fn search(&self, channel_id: &str, query: &str) -> Result<SearchOutcome, Error> {
+    /// Messages matching `query`: the whole server when `guild` is given, else the `channel`.
+    pub fn search(&self, guild: Option<&str>, channel: Option<&str>, query: &str) -> Result<SearchOutcome, Error> {
         let url = format!("{}/search/messages", self.ep.api_client);
         let mut r = agent().post(&url).header("Accept", "application/json").header("Authorization", &self.token);
         if let Some(o) = &self.ep.origin { r = r.header("Origin", o.as_str()) }
-        let body = json!({
-            "content": query, "channel_id": [channel_id], "context_channel_id": channel_id,
-            "hits_per_page": 25, "page": 1,
-        });
+        let mut body = json!({ "content": query, "hits_per_page": 25, "page": 1 });
+        if let Some(g) = guild { body["context_guild_id"] = g.into() }
+        if let Some(c) = channel { body["channel_id"] = json!([c]); body["context_channel_id"] = c.into() }
         let mut res = r.send_json(&body).map_err(|e| Error::local(format!("falha de rede: {e}")))?;
         let status = res.status().as_u16();
         let body = res.body_mut().read_json().unwrap_or(Value::Null);
@@ -479,6 +477,14 @@ impl Api {
         let msgs = body.get("messages").and_then(Value::as_array).into_iter().flatten()
             .filter_map(Message::from_json).collect();
         Ok(SearchOutcome::Hits(msgs))
+    }
+
+    /// A page of messages centered on `message_id` (jumping to a search hit).
+    pub fn messages_around(&self, channel_id: &str, message_id: &str, limit: u32) -> Result<Vec<Message>, Error> {
+        let body = self.get(&format!("/channels/{channel_id}/messages?around={message_id}&limit={limit}"))?;
+        let mut msgs: Vec<Message> = body.as_array().into_iter().flatten().filter_map(Message::from_json).collect();
+        msgs.sort_by(|a, b| snowflake_cmp(&a.id, &b.id));
+        Ok(msgs)
     }
 
     /// A message with one file attached: `multipart/form-data` with the message as `payload_json`

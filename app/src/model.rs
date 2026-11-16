@@ -167,6 +167,23 @@ impl Chat {
         self.mark_read();
     }
 
+    /// Opens the channel with this id, in the open server, another server, or the DMs.
+    pub fn open_channel_by_id(&mut self, id: &str) -> bool {
+        if let Some(i) = self.channels().iter().position(|c| c.id == id) { self.open_channel(i); return true }
+        if let Some(gi) = self.guilds.iter().position(|g| g.channels.iter().any(|c| c.id == id)) {
+            self.nav.guild = Some(gi);
+            self.voice_view = None;
+            if let Some(i) = self.channels().iter().position(|c| c.id == id) { self.open_channel(i); return true }
+        }
+        if let Some(i) = self.dms.iter().position(|c| c.id == id) {
+            self.nav = Nav { guild: None, channel: i };
+            self.voice_view = None;
+            self.mark_read();
+            return true;
+        }
+        false
+    }
+
     /// Shows the text chat of the open server's `i`-th voice channel.
     pub fn open_voice_chat(&mut self, i: usize) { self.voice_view = Some(i) }
 
@@ -437,6 +454,18 @@ impl Chat {
 
     pub fn on_history_failed(&mut self, channel_id: &str) {
         self.logs.entry(channel_id.to_string()).or_default().loading = false;
+    }
+
+    /// Replaces a channel's log with a page centered on a search hit (older and newer both
+    /// unknown, so scrolling asks for more).
+    pub fn load_around(&mut self, channel_id: &str, msgs: Vec<Message>) {
+        for m in &msgs { self.roster.remember(&m.author) }
+        self.note_roles(&msgs);
+        let log = self.logs.entry(channel_id.to_string()).or_default();
+        log.loading = false;
+        log.loaded = true;
+        log.has_more = true;
+        log.msgs = msgs.into_iter().map(Into::into).collect();
     }
 
     /// Adds our own message at once, marked pending until the server confirms it.

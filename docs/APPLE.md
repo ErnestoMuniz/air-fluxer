@@ -20,9 +20,11 @@ arm64). O áudio do sistema é o CoreAudio; o Linux continua no PulseAudio. A ch
 - **Configurações**: página "Voice & audio" no diálogo de configurações para escolher o microfone e a
   saída de som (System default ou um dispositivo da lista, com botão de atualizar). A escolha vale na
   hora, inclusive dentro de uma chamada.
-- **Mensagens**: menu de contexto (Responder, Copiar texto, Editar e Apagar nas mensagens da própria
-  conta), barra de resposta/edição no composer com `message_reference`, e ack de leitura
-  (`/read-states/ack`) para os badges e a linha de "novas" não ficarem velhos.
+- **Mensagens**: busca no servidor inteiro (ou no canal da DM) com `POST /search/messages`, resultados com
+  canal/autor/data, e "pular para" carregando o trecho com `?around=` quando a mensagem está fora do
+  histórico carregado; menu de contexto (Responder, Copiar texto, Editar e Apagar nas mensagens da própria
+  conta), barra de resposta/edição com `message_reference`, e ack de leitura (`/read-states/ack`).
+- **Login**: campo de instância (qualquer servidor Fluxer), além do `fluxer.com` padrão.
 - **Configurações**: página de perfil responsiva; busca falsa e botão de usuário removidos; troca/remoção
   de avatar (PNG quadrado), fuso do perfil a partir do sistema, volume de entrada/saída, medidor do
   microfone e supressão de ruído; "Get Plutonium" abre a página da instância.
@@ -62,9 +64,10 @@ arm64). O áudio do sistema é o CoreAudio; o Linux continua no PulseAudio. A ch
 - **Câmera e compartilhamento de tela**: permissões e o caminho do LiveKit no macOS; hoje só dá para
   assistir ao stream de outras pessoas, não publicar o próprio.
 - **Chamadas em DM** não existem; só canais de voz de servidor.
-- **Busca de mensagens**: o campo de busca do servidor ainda não está no cliente (o de membros está).
-- **Notificações e badge no Dock**: nenhum dos dois; o app não avisa fora da janela.
+- **Busca de mensagens**: feita (servidor inteiro, com salto por `?around=`).
+- **Notificações**: menção, @everyone e DM geram notificação do sistema (osascript/notify-send); falta
+  badge no Dock.
 - **Universal**: só `aarch64-apple-darwin` foi construído; falta o `x86_64` (e o libwebrtc dele).
-- **Integrações nativas**: keychain para a sessão, notificações, deep links, LaunchServices,
-  auto-update e seletor de instância (hoje fixa em `fluxer.com`).
+- **Integrações nativas**: keychain para a sessão, deep links, LaunchServices, auto-update e seguir o
+  dispositivo padrão em tempo real.
 - **Ícone**: hoje é o círculo do logo; o estilo do macOS costuma ser um "squircle" com margem.
