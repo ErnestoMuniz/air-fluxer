@@ -58,16 +58,16 @@ arm64). O áudio do sistema é o CoreAudio; o Linux continua no PulseAudio. A ch
 - **Distribuição gratuita**: a assinatura ad-hoc é a definitiva por enquanto (sem Developer ID). Quem
   baixar o `.app` precisa abrir com o botão direito → Abrir, ou rodar
   `xattr -dr com.apple.quarantine Fluxer.app`; o Gatekeeper não reconhece o binário na primeira vez.
-- **Troca de dispositivo padrão** em tempo real: o `cpal` não segue o default do sistema sozinho;
-  hoje só ao reabrir o stream (entrar na chamada/menu). AirPods e Bluetooth merecem um teste.
+- **Troca de dispositivo padrão**: o microfone segue o default do sistema (reabre em ~1 s quando ele
+  muda); as saídas continuam abrindo o default no início de cada stream. AirPods/Bluetooth ainda
+  merecem um teste de áudio real.
 - **Volume do sistema** não é controlado; o app escala as amostras, como no Linux.
 - **Câmera e compartilhamento de tela**: permissões e o caminho do LiveKit no macOS; hoje só dá para
   assistir ao stream de outras pessoas, não publicar o próprio.
 - **Chamadas em DM** não existem; só canais de voz de servidor.
-- **Busca de mensagens**: feita (servidor inteiro, com salto por `?around=`).
-- **Notificações**: menção, @everyone e DM geram notificação do sistema (osascript/notify-send); falta
-  badge no Dock.
-- **Universal**: só `aarch64-apple-darwin` foi construído; falta o `x86_64` (e o libwebrtc dele).
-- **Integrações nativas**: keychain para a sessão, deep links, LaunchServices, auto-update e seguir o
-  dispositivo padrão em tempo real.
+- **Badge no Dock**: falta (as notificações do sistema já saem para menção/DM).
+- **Universal**: `UNIVERSAL=1 scripts/macos-bundle.sh` junta arm64 + x86_64 com lipo; o primeiro build
+  x86_64 baixa o libwebrtc dele.
+- **Integrações nativas**: o token agora vai para o Keychain do macOS (o JSON fica sem ele); faltam
+  deep links, LaunchServices e auto-update.
 - **Ícone**: hoje é o círculo do logo; o estilo do macOS costuma ser um "squircle" com margem.

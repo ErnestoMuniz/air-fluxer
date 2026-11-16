@@ -259,9 +259,13 @@ fn open_mic_on(device: Option<&str>) -> Option<Mic> {
     Some(Mic { _stream: stream, queue, failed, resampler: Resampler::new(stream_config.sample_rate, RATE), scratch: Vec::new() })
 }
 
+/// The current default input device's id (what "System default" resolves to right now).
+pub fn default_input() -> Option<String> {
+    cpal::default_host().default_input_device()?.id().ok().map(|id| id.to_string())
+}
+
 /// Lists microphones and speakers (blocking; run it off the UI thread).
-pub fn list_devices() -> Result<Devices, String> {
-    fn collect(devices: impl Iterator<Item = cpal::Device>) -> Vec<Device> {
+pub fn list_devices() -> Result<Devices, String> {    fn collect(devices: impl Iterator<Item = cpal::Device>) -> Vec<Device> {
         let mut out: Vec<Device> = devices.map(|d| {
             let label = d.description().map(|i| i.name().to_string()).unwrap_or_else(|_| d.to_string());
             let id = d.id().map(|i| i.to_string()).unwrap_or_else(|_| label.clone());

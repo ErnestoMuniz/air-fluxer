@@ -155,20 +155,34 @@ fn start_capture(device: Option<String>, shared: Arc<Shared>, frames: Option<Unb
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
     std::thread::Builder::new().name("fluxer-mic".into()).spawn(move || {
-        let Some(mut mic) = audio::open_mic(device.as_deref()) else {
-            eprintln!("fluxer: could not open the microphone {device:?}");
-            return;
-        };
         let mut rnn = DenoiseState::new();
         let (mut bytes, mut input, mut output) = ([0u8; FRAME * 2], [0f32; FRAME], [0f32; FRAME]);
+        // When following the system default, remember which device that was so a switch (AirPods
+        // plugged in, the default changed in System Settings) reopens the capture on the new one.
+        let mut followed = if device.is_none() { audio::default_input() } else { None };
         while !flag.load(Ordering::Relaxed) {
-            if mic.read(&mut bytes).is_err() { break }
-            let mut pcm: Vec<i16> = bytes.chunks_exact(2).map(|b| i16::from_ne_bytes([b[0], b[1]])).collect();
-            scale(&mut pcm, shared.in_gain());
-            if shared.denoise.load(Ordering::Relaxed) { denoise_frame(&mut rnn, &mut pcm, &mut input, &mut output) }
-            shared.set_level(level_of(&pcm));
-            if peak_of(&pcm) > SPEAK_PEAK && !shared.mic_off.load(Ordering::Relaxed) && let Some(me) = shared.me() { shared.mark_speaking(&me) }
-            if let Some(tx) = &frames && tx.send(pcm).is_err() { break }
+            let Some(mut mic) = audio::open_mic(device.as_deref()) else {
+                eprintln!("fluxer: could not open the microphone {device:?}");
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                continue;
+            };
+            let mut ticks = 0u32;
+            while !flag.load(Ordering::Relaxed) {
+                if mic.read(&mut bytes).is_err() { break }
+                let mut pcm: Vec<i16> = bytes.chunks_exact(2).map(|b| i16::from_ne_bytes([b[0], b[1]])).collect();
+                scale(&mut pcm, shared.in_gain());
+                if shared.denoise.load(Ordering::Relaxed) { denoise_frame(&mut rnn, &mut pcm, &mut input, &mut output) }
+                shared.set_level(level_of(&pcm));
+                if peak_of(&pcm) > SPEAK_PEAK && !shared.mic_off.load(Ordering::Relaxed) && let Some(me) = shared.me() { shared.mark_speaking(&me) }
+                if let Some(tx) = &frames && tx.send(pcm).is_err() { break }
+                ticks += 1;
+                // About once a second: did the system default input change under us?
+                if device.is_none() && ticks % 100 == 0 {
+                    let now = audio::default_input();
+                    if now != followed { followed = now; break }
+                }
+            }
+            shared.set_level(0);
         }
         shared.set_level(0);
     }).ok();

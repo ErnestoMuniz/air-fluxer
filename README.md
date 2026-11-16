@@ -35,7 +35,8 @@ cargo test -p fluxer-app -p fluxer-client
 ### macOS app
 
 ```sh
-scripts/macos-bundle.sh                     # → target/release/Fluxer.app
+scripts/macos-bundle.sh                     # → target/release/Fluxer.app (this Mac's architecture)
+UNIVERSAL=1 scripts/macos-bundle.sh         # arm64 + x86_64 in one bundle
 open target/release/Fluxer.app
 ```
 

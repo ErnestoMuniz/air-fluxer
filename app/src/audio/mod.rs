@@ -114,6 +114,14 @@ pub fn open_mic(device: Option<&str>) -> Option<Mic> {
     { pulse::open_mic(device) }
 }
 
+/// The audio system's current default microphone id, for following it when no device is chosen.
+pub fn default_input() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    { macos::default_input() }
+    #[cfg(not(target_os = "macos"))]
+    { pulse::default_input() }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Device {
     /// What is stored and handed to the audio system.

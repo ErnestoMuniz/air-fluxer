@@ -55,6 +55,13 @@ pub fn open_mic(device: Option<&str>) -> Option<Mic> {
     open(device).or_else(|| if device.is_some() { open(None) } else { None }).map(Mic)
 }
 
+/// The current default source name (PulseAudio/PipeWire), via `pactl`.
+pub fn default_input() -> Option<String> {
+    let out = std::process::Command::new("pactl").args(["get-default-source"]).output().ok()?;
+    let name = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    if name.is_empty() { None } else { Some(name) }
+}
+
 /// Lists microphones and speakers (blocking; run it off the UI thread).
 pub fn list_devices() -> Result<Devices, String> {
     let mut ml = Mainloop::new().ok_or("PulseAudio indisponível")?;

@@ -12,7 +12,17 @@ cd "$ROOT"
 APP="$ROOT/target/release/Fluxer.app"
 VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' app/Cargo.toml | head -n 1)
 
-cargo build --release -p fluxer-app
+# UNIVERSAL=1 builds both Apple architectures and joins them with lipo (needs
+# `rustup target add x86_64-apple-darwin` and an Intel libwebrtc build the first time).
+if [ "${UNIVERSAL:-0}" = "1" ]; then
+    cargo build --release -p fluxer-app --target aarch64-apple-darwin
+    cargo build --release -p fluxer-app --target x86_64-apple-darwin
+    mkdir -p target/release
+    lipo -create target/aarch64-apple-darwin/release/fluxer-app target/x86_64-apple-darwin/release/fluxer-app \
+        -output target/release/fluxer-app
+else
+    cargo build --release -p fluxer-app
+fi
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
