@@ -58,6 +58,8 @@ pub enum Ev {
     Ping(u32),
     /// This account started (true) or stopped (false) sharing its screen.
     Sharing(bool),
+    /// Something failed without closing the room (a screen share denied, say).
+    Notice(String),
     /// A picture appeared or went away in `Frames`.
     Video,
 }
@@ -129,6 +131,20 @@ impl Drop for Screen { fn drop(&mut self) { self.stop.store(true, Ordering::Rela
 
 /// Captures the screen (the macOS picker chooses what) and publishes it as a screen-share track.
 async fn start_screen(room: &Room) -> Result<Screen, String> {
+    #[cfg(target_os = "macos")]
+    {
+        // Screen Recording is a TCC permission: ask before touching ScreenCaptureKit, so the system
+        // prompt appears and a denied permission becomes a message instead of a silent black track.
+        unsafe extern "C" {
+            fn CGPreflightScreenCaptureAccess() -> bool;
+            fn CGRequestScreenCaptureAccess() -> bool;
+        }
+        // SAFETY: plain CoreGraphics C functions with no arguments.
+        if !unsafe { CGPreflightScreenCaptureAccess() } {
+            unsafe { CGRequestScreenCaptureAccess(); }
+            return Err("Permita a Gravação de Tela em Ajustes do Sistema → Privacidade e Segurança e reabra o app.".into());
+        }
+    }
     let source = NativeVideoSource::new(VideoResolution { width: 1920, height: 1080 }, true);
     let track = LocalVideoTrack::create_video_track("screen", RtcVideoSource::Native(source.clone()));
     let publish = TrackPublishOptions { source: TrackSource::Screenshare, ..Default::default() };
@@ -154,6 +170,11 @@ async fn start_screen(room: &Room) -> Result<Screen, String> {
             let (sy, su, sv) = buffer.strides();
             let (y, u, v) = buffer.data_mut();
             yuv_helper::abgr_to_i420(frame.data(), frame.stride(), y, sy, u, su, v, sv, w, h);
+            // 1080p at most: a 4K/5K screen would cost more than the encoder can send.
+            let buffer = if w > 1920 || h > 1080 {
+                let (sw, sh) = if w * 1080 >= h * 1920 { (1920, (h * 1920 / w).max(2) & !1) } else { ((w * 1080 / h).max(2) & !1, 1080) };
+                buffer.scale(sw, sh)
+            } else { buffer };
             source.capture_frame(&VideoFrame::new(VideoRotation::VideoRotation0, buffer));
         });
         while !flag.load(Ordering::Relaxed) {
@@ -424,7 +445,7 @@ async fn engine(mut cmds: UnboundedReceiver<Cmd>, out: mpsc::Sender<Ev>, wake: W
                             if l.screen.is_none() {
                                 match start_screen(&l.room).await {
                                     Ok(s) => { l.screen = Some(s); send(Ev::Sharing(true)) }
-                                    Err(e) => send(Ev::Failed(e)),
+                                    Err(e) => send(Ev::Notice(e)),
                                 }
                             }
                         } else if let Some(s) = l.screen.take() {

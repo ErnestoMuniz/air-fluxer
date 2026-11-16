@@ -40,10 +40,18 @@ UNIVERSAL=1 scripts/macos-bundle.sh         # arm64 + x86_64 in one bundle
 open target/release/Fluxer.app
 ```
 
-The bundle carries the microphone and camera usage strings and is ad-hoc signed, with no paid developer account:
-it runs on this Mac, and anyone who downloads it opens it with **right-click → Open** (or
-`xattr -dr com.apple.quarantine Fluxer.app`) the first time. See `docs/APPLE.md` for what the macOS port does
-and what is still missing.
+The bundle is ad-hoc signed by default. To stop macOS asking for the microphone and screen recording
+again after every rebuild, create the free self-signed identity once:
+
+```sh
+scripts/macos-dev-cert.sh                   # creates "Fluxer Dev" in the login keychain
+CODESIGN_IDENTITY="Fluxer Dev" scripts/macos-bundle.sh
+```
+
+An ad-hoc signature changes on every build (a different app to TCC); a stable certificate keeps the
+permission. The bundle carries the microphone and camera usage strings; anyone who downloads it opens it
+with **right-click → Open** (or `xattr -dr com.apple.quarantine Fluxer.app`) the first time. See
+`docs/APPLE.md`.
 
 ## Looking at it without a window
 

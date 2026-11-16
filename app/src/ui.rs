@@ -254,7 +254,11 @@ fn channel_row(s: &State, i: usize, ch: &Channel) -> El {
     let (p, t) = (pal(), tok::theme(true));
     let active = s.chat.voice_view.is_none() && i == s.chat.nav.channel;
     let lead = match &ch.peer {
-        Some(u) => avatar(s, u, 24.0),
+        Some(u) => {
+            let status = s.chat.roster.status_of(&u.id).to_string();
+            row().size(24.0, 24.0).child(avatar(s, u, 24.0))
+                .child(el().absolute(15.0, 15.0).size(9.0, 9.0).radius(4.5).fill(status_color(&status)).border(2.0, p.side))
+        }
         None => text(if s.chat.nav.guild.is_some() { "#" } else { "@" }).font(type_::TITLE).color(t.text_secondary).w(24.0),
     };
     let name_color = if active || ch.unread > 0 || ch.new { t.text } else { t.text_secondary };
@@ -444,10 +448,37 @@ fn dock(s: &State) -> El {
         .child(face)
         .child(col().grow(1.0).min_w(0.0)
             .child(text(u.display().to_string()).font(type_::TITLE).color(t.text).truncate())
-            .child(text(match status { "idle" => "Idle", "dnd" => "Do not disturb", _ => "Online" }).font(type_::LABEL).color(t.text_secondary)))
+            .child(row().key("account-status").gap(4.0).center_y().cursor(rune::Cursor::Pointer)
+                .on_press(|s: &mut State| s.status_menu = !s.status_menu)
+                .child(el().size(8.0, 8.0).radius(4.0).fill(status_color(&s.my_status)))
+                .child(text(match s.my_status.as_str() { "idle" => "Idle", "dnd" => "Do not disturb", "invisible" => "Invisible", _ => "Online" })
+                    .font(type_::LABEL).color(t.text_secondary))))
         .child(mic).child(deaf)
         .child(icon_btn("audio-settings", false, false, &GEAR, settings::open)))
         .pin(Some(8.0), None, None, Some(8.0))
+}
+
+/// The status picker above the account bar.
+fn status_menu(s: &State) -> El {
+    if !s.status_menu { return el().size(0.0, 0.0) }
+    let (p, t) = (pal(), tok::theme(true));
+    let item = |value: &'static str, label: &'static str| row().key(format!("st-{value}")).h(32.0).px(10.0).gap(8.0).center_y()
+        .radius(radius::SM).hover(p.hover)
+        .child(el().size(9.0, 9.0).radius(4.5).fill(status_color(value)))
+        .child(text(label.to_string()).font(type_::BODY).color(t.text).grow(1.0))
+        .cursor(rune::Cursor::Pointer)
+        .on_press(move |s: &mut State| { crate::set_status(s, value); s.status_menu = false });
+    col().key("status-menu").w(180.0).px(6.0).py(6.0).gap(1.0).radius(10.0)
+        .fill(oklch(0.22, 0.008, 265.0)).border(1.0, p.line).shadow(6.0, 24.0, t.shadow).on_press(|_: &mut State| {})
+        .child(item("online", "Online")).child(item("idle", "Idle"))
+        .child(item("dnd", "Do not disturb")).child(item("invisible", "Invisible"))
+        .anchored("account-status", rune::Side::Top, rune::Align::Start, 6.0)
+}
+
+fn status_scrim(s: &State) -> El {
+    if !s.status_menu { return el().size(0.0, 0.0) }
+    el().key("status-scrim").pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+        .on_press(|s: &mut State| s.status_menu = false)
 }
 
 /// The small card that explains the voice signal icon: the room's round-trip time.
@@ -1403,7 +1434,7 @@ fn main_view(s: &State, stage: Option<[f32; 2]>) -> El {
     // A mention's card anchors beside this marker at the point the pointer was on.
     let mention_anchor = s.profile.as_ref().and_then(|p| p.at)
         .map_or_else(|| el().size(0.0, 0.0), |(x, y)| el().key("mention-anchor").absolute(x, y).size(1.0, 1.0));
-    all.child(menu_scrim(s)).child(user_menu_scrim(s)).child(msg_menu_scrim(s)).child(profile_scrim(s)).child(dock(s)).child(audio_menu(s)).child(ctx_point(s)).child(msg_point(s)).child(user_menu(s)).child(message_menu(s)).child(mention_anchor).child(profile_card(s)).child(ping_tip(s)).child(settings::dialog(s))
+    all.child(menu_scrim(s)).child(user_menu_scrim(s)).child(msg_menu_scrim(s)).child(status_scrim(s)).child(profile_scrim(s)).child(dock(s)).child(audio_menu(s)).child(ctx_point(s)).child(msg_point(s)).child(user_menu(s)).child(message_menu(s)).child(status_menu(s)).child(mention_anchor).child(profile_card(s)).child(ping_tip(s)).child(settings::dialog(s))
         .on_pointer_move_local(|s: &mut State, p, tx| { s.pointer.set([p.window_x, p.window_y]); tx.live_only() })
         .on_window_focus(|s: &mut State, focused, _| set_focus(s, focused))
 }

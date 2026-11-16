@@ -126,6 +126,9 @@ pub struct State {
     pub pointer: rune::Live<[f32; 2]>,
     /// The members panel's filter (names and nicknames).
     pub member_search: TextEdit,
+    /// The status this account shows (online/idle/dnd/invisible), and its little menu.
+    pub my_status: String,
+    pub status_menu: bool,
     /// The video attachment playing inline, if any (attachment id, player).
     pub video: Option<(String, rune::Player)>,
     pub customize_open: bool,
@@ -215,7 +218,7 @@ impl Default for State {
     fn default() -> Self {
         State {
             rail_hover: None, settings_open: false, pf: Default::default(), prof: [TextEdit::new(""), TextEdit::new(""), TextEdit::new(""), TextEdit::new("")],
-            picker: Default::default(), prefs: prefs::load(), plus_open: false, msg_hover: None, react_picker: None, highlighted: None, pointer: rune::Live::new([0.0, 0.0]), member_search: TextEdit::new(""), video: None, customize_open: false, notice: None,
+            picker: Default::default(), prefs: prefs::load(), plus_open: false, msg_hover: None, react_picker: None, highlighted: None, pointer: rune::Live::new([0.0, 0.0]), member_search: TextEdit::new(""), my_status: "online".into(), status_menu: false, video: None, customize_open: false, notice: None,
             ctx: None, msg_menu: None, draft_mode: Draft { reply: None, editing: None }, acked: None, search: Default::default(), pending_jump: None, profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
             intro: 0.0, intro_t0: None, chat: demo_chat(), net: net::Net::default(), draft: TextEdit::new(""), gateway: None, subscribed: None, synced_guilds: Default::default(), show_members: true, call: Default::default(), focused: true, visible: 0..0, typing_wake: false, thumb: Default::default(),
         }
@@ -596,8 +599,16 @@ pub fn leave_voice(s: &mut State) { s.call.leave(s.gateway.as_ref()) }
 pub fn toggle_mute(s: &mut State) { s.call.toggle_mute(s.gateway.as_ref()) }
 pub fn toggle_deafen(s: &mut State) { s.call.toggle_deafen(s.gateway.as_ref()) }
 
-pub fn set_focus(s: &mut State, focused: bool) {
-    s.focused = focused;
+/// Changes what status this account shows (the gateway tells everyone else; invisible looks offline).
+pub fn set_status(s: &mut State, status: &str) {
+    s.my_status = status.to_string();
+    if let Some(me) = &s.chat.me { s.chat.roster.status.insert(me.id.clone(), status.to_string()); }
+    if let Some(gw) = &s.gateway {
+        gw.send(Payload { op: Opcode::PRESENCE_UPDATE, d: Some(serde_json::json!({ "status": status })), s: None, t: None });
+    }
+}
+
+pub fn set_focus(s: &mut State, focused: bool) {    s.focused = focused;
     s.net.set_focused(focused);
     // Losing the focus stops the animations (their pictures are let go in time); gaining it asks for those on screen again.
     reconcile(s);

@@ -29,8 +29,10 @@ arm64). O áudio do sistema é o CoreAudio; o Linux continua no PulseAudio. A ch
   de avatar (PNG quadrado), fuso do perfil a partir do sistema, volume de entrada/saída, medidor do
   microfone e supressão de ruído; "Get Plutonium" abre a página da instância.
 - **Membros**: filtro por nome/apelido.
-- **Voz**: o microfone segue o default do sistema; o botão de tela publica o Mac inteiro/janela pelo
-  seletor do ScreenCaptureKit do libwebrtc (track `Screenshare`, ~10 fps) e pode ser desligado na hora.
+- **Voz**: o microfone segue o default do sistema; o botão de tela pede a permissão de Gravação de
+  Tela (TCC), abre o seletor do ScreenCaptureKit e publica a captura como `Screenshare` em até 1080p.
+- **Status**: dá para escolher Online/Idle/Do not disturb/Invisible no rodapé da conta (envia
+  `PRESENCE_UPDATE`), e as DMs mostram o ponto de disponibilidade de cada pessoa.
 - **Sobre** (`ui/settings.rs`): "macOS 26.2 (arm64)" via `sw_vers`, lido uma vez.
 - **Bundle** (`packaging/macos/`, `scripts/macos-bundle.sh`): `Fluxer.app` com `Info.plist`
   (microfone, câmera, versão), ícone gerado do `app/assets/logo.svg` e assinatura ad-hoc com
@@ -57,8 +59,9 @@ arm64). O áudio do sistema é o CoreAudio; o Linux continua no PulseAudio. A ch
 
 - **Microfone no bundle**: a primeira chamada pede permissão (TCC). Testar dentro do `Fluxer.app`
   assinado, não só no binário solto.
-- **Distribuição gratuita**: a assinatura ad-hoc é a definitiva por enquanto (sem Developer ID). Quem
-  baixar o `.app` precisa abrir com o botão direito → Abrir, ou rodar
+- **Distribuição gratuita**: assinatura ad-hoc ou com o certificado autoassinado "Fluxer Dev"
+  (`scripts/macos-dev-cert.sh`), que mantém a permissão de microfone/tela entre builds. Quem baixar o
+  `.app` precisa abrir com o botão direito → Abrir, ou rodar
   `xattr -dr com.apple.quarantine Fluxer.app`; o Gatekeeper não reconhece o binário na primeira vez.
 - **Troca de dispositivo padrão**: o microfone segue o default do sistema (reabre em ~1 s quando ele
   muda); as saídas continuam abrindo o default no início de cada stream. AirPods/Bluetooth ainda

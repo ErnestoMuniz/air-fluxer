@@ -336,6 +336,7 @@ impl Call {
                 Ev::Speaking(users) => self.speaking = users.into_iter().collect(),
                 Ev::Ping(ms) => self.ping = Some(ms),
                 Ev::Sharing(on) => { self.sharing = on; if !on { self.view = self.view && on } }
+                Ev::Notice(why) => self.error = Some(why),
                 Ev::Video => {}
             }
         }

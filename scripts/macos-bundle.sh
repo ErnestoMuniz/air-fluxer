@@ -71,9 +71,13 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 
+IDENTITY=${CODESIGN_IDENTITY:-}
+if [ -z "$IDENTITY" ] && security find-certificate -c "Fluxer Dev" >/dev/null 2>&1; then
+    IDENTITY="Fluxer Dev"
+fi
+
 codesign --force --options runtime \
     --entitlements packaging/macos/Fluxer.entitlements \
-    --sign "${CODESIGN_IDENTITY:--}" \
+    --sign "${IDENTITY:--}" \
     "$APP"
-
 echo "built $APP"
