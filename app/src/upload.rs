@@ -19,7 +19,7 @@ pub fn upload(s: &mut State, path: std::path::PathBuf) {
     let text = s.draft.text.trim().to_string();
     s.notice = None;
     s.net.send_file(&cid, &text, path);
-    s.draft = rune::TextEdit::new("");
+    s.draft.clear();
 }
 
 #[cfg(test)]

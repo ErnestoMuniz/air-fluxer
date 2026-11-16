@@ -339,6 +339,14 @@ pub struct Api {
     token: String,
 }
 
+/// What a message search returned.
+#[derive(Clone, Debug)]
+pub enum SearchOutcome {
+    /// The server is still building its index for this channel.
+    Indexing,
+    Hits(Vec<Message>),
+}
+
 impl Api {
     pub fn new(ep: Endpoints, token: impl Into<String>) -> Api { Api { ep, token: token.into() } }
     pub fn endpoints(&self) -> &Endpoints { &self.ep }
@@ -407,6 +415,97 @@ impl Api {
     /// A message made only of stickers.
     pub fn send_sticker(&self, channel_id: &str, sticker_id: &str, nonce: &str) -> Result<Message, Error> {
         self.post_message(channel_id, json!({ "sticker_ids": [sticker_id], "nonce": nonce }))
+    }
+
+    /// A message that answers `reply_to` (the composer's reply bar).
+    pub fn send_reply(&self, channel_id: &str, content: &str, nonce: &str, reply_to: &str) -> Result<Message, Error> {
+        self.post_message(channel_id, json!({
+            "content": content, "nonce": nonce,
+            "message_reference": { "message_id": reply_to, "channel_id": channel_id, "type": 0 },
+            "allowed_mentions": { "replied_user": true },
+        }))
+    }
+
+    /// Rewrites one of this account's messages.
+    pub fn edit_message(&self, channel_id: &str, message_id: &str, content: &str) -> Result<Message, Error> {
+        let url = format!("{}/channels/{channel_id}/messages/{message_id}", self.ep.api_client);
+        let mut r = agent().patch(&url).header("Accept", "application/json").header("Authorization", &self.token);
+        if let Some(o) = &self.ep.origin { r = r.header("Origin", o.as_str()) }
+        let mut res = r.send_json(json!({ "content": content })).map_err(|e| Error::local(format!("falha de rede: {e}")))?;
+        let status = res.status().as_u16();
+        let body = res.body_mut().read_json().unwrap_or(Value::Null);
+        if !(200..300).contains(&status) { return Err(failure(&crate::rest::Reply { status, body })) }
+        Message::from_json(&body).ok_or_else(|| Error::local("resposta de edição inesperada"))
+    }
+
+    /// Deletes one of this account's messages.
+    pub fn delete_message(&self, channel_id: &str, message_id: &str) -> Result<(), Error> {
+        let url = format!("{}/channels/{channel_id}/messages/{message_id}", self.ep.api_client);
+        let mut r = agent().delete(&url).header("Accept", "application/json").header("Authorization", &self.token);
+        if let Some(o) = &self.ep.origin { r = r.header("Origin", o.as_str()) }
+        let mut res = r.call().map_err(|e| Error::local(format!("falha de rede: {e}")))?;
+        let status = res.status().as_u16();
+        let body = res.body_mut().read_json().unwrap_or(Value::Null);
+        if (200..300).contains(&status) { Ok(()) } else { Err(failure(&crate::rest::Reply { status, body })) }
+    }
+
+    /// Marks a channel read up to `message_id`.
+    pub fn ack(&self, channel_id: &str, message_id: &str) -> Result<(), Error> {
+        let url = format!("{}/read-states/ack", self.ep.api_client);
+        let mut r = agent().post(&url).header("Accept", "application/json").header("Authorization", &self.token);
+        if let Some(o) = &self.ep.origin { r = r.header("Origin", o.as_str()) }
+        let body = json!({ "read_states": [{ "channel_id": channel_id, "message_id": message_id }] });
+        let mut res = r.send_json(&body).map_err(|e| Error::local(format!("falha de rede: {e}")))?;
+        let status = res.status().as_u16();
+        let body = res.body_mut().read_json().unwrap_or(Value::Null);
+        if (200..300).contains(&status) { Ok(()) } else { Err(failure(&crate::rest::Reply { status, body })) }
+    }
+
+    /// Messages matching `query`: the whole server when `guild` is given, else the `channel`.
+    pub fn search(&self, guild: Option<&str>, channel: Option<&str>, query: &str) -> Result<SearchOutcome, Error> {
+        let url = format!("{}/search/messages", self.ep.api_client);
+        let mut r = agent().post(&url).header("Accept", "application/json").header("Authorization", &self.token);
+        if let Some(o) = &self.ep.origin { r = r.header("Origin", o.as_str()) }
+        let mut body = json!({ "content": query, "hits_per_page": 25, "page": 1 });
+        if let Some(g) = guild { body["context_guild_id"] = g.into() }
+        if let Some(c) = channel { body["channel_id"] = json!([c]); body["context_channel_id"] = c.into() }
+        let mut res = r.send_json(&body).map_err(|e| Error::local(format!("falha de rede: {e}")))?;
+        let status = res.status().as_u16();
+        let body = res.body_mut().read_json().unwrap_or(Value::Null);
+        if !(200..300).contains(&status) { return Err(failure(&crate::rest::Reply { status, body })) }
+        if body.get("indexing").and_then(Value::as_bool) == Some(true) { return Ok(SearchOutcome::Indexing) }
+        let msgs = body.get("messages").and_then(Value::as_array).into_iter().flatten()
+            .filter_map(Message::from_json).collect();
+        Ok(SearchOutcome::Hits(msgs))
+    }
+
+    /// Starts ringing the people in a DM call.
+    pub fn ring_call(&self, channel_id: &str, recipients: &[String]) -> Result<(), Error> {
+        self.call_action(channel_id, "ring", json!({ "recipients": recipients }))
+    }
+
+    /// Stops ringing (all, or just `recipients`).
+    pub fn stop_ringing(&self, channel_id: &str, recipients: Option<&[String]>) -> Result<(), Error> {
+        let body = match recipients { Some(r) => json!({ "recipients": r }), None => Value::Object(Default::default()) };
+        self.call_action(channel_id, "stop-ringing", body)
+    }
+
+    fn call_action(&self, channel_id: &str, action: &str, body: Value) -> Result<(), Error> {
+        let url = format!("{}/channels/{channel_id}/call/{action}", self.ep.api_client);
+        let mut r = agent().post(&url).header("Accept", "application/json").header("Authorization", &self.token);
+        if let Some(o) = &self.ep.origin { r = r.header("Origin", o.as_str()) }
+        let mut res = r.send_json(&body).map_err(|e| Error::local(format!("falha de rede: {e}")))?;
+        let status = res.status().as_u16();
+        let body = res.body_mut().read_json().unwrap_or(Value::Null);
+        if (200..300).contains(&status) { Ok(()) } else { Err(failure(&crate::rest::Reply { status, body })) }
+    }
+
+    /// A page of messages centered on `message_id` (jumping to a search hit).
+    pub fn messages_around(&self, channel_id: &str, message_id: &str, limit: u32) -> Result<Vec<Message>, Error> {
+        let body = self.get(&format!("/channels/{channel_id}/messages?around={message_id}&limit={limit}"))?;
+        let mut msgs: Vec<Message> = body.as_array().into_iter().flatten().filter_map(Message::from_json).collect();
+        msgs.sort_by(|a, b| snowflake_cmp(&a.id, &b.id));
+        Ok(msgs)
     }
 
     /// A message with one file attached: `multipart/form-data` with the message as `payload_json`

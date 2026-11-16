@@ -1,22 +1,27 @@
 //! Audio devices and the voice settings the user picks: which microphone and speakers, and the
-//! RNNoise noise suppression (on by default). Devices are listed through PulseAudio, which
-//! PipeWire serves, and the choice is saved next to the session.
+//! RNNoise noise suppression (on by default). The system's own audio service is used — CoreAudio
+//! on macOS, PulseAudio (which PipeWire serves) on Linux — and the choice is saved next to the
+//! session.
 
-use libpulse_binding as pulse;
-use pulse::callbacks::ListResult;
-use pulse::context::{Context, FlagSet, State};
-use pulse::mainloop::standard::{IterateResult, Mainloop};
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::rc::Rc;
+
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(not(target_os = "macos"))]
+mod pulse;
+
+#[cfg(target_os = "macos")]
+pub use macos::{Mic, Playback};
+#[cfg(not(target_os = "macos"))]
+pub use pulse::{Mic, Playback};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
-    /// PulseAudio source name; None follows the system default.
+    /// The audio system's device id; None follows the system default.
     pub mic: Option<String>,
-    /// PulseAudio sink name; None follows the system default.
+    /// The audio system's device id; None follows the system default.
     pub speaker: Option<String>,
     /// RNNoise noise suppression on the microphone.
     pub noise_suppression: bool,
@@ -30,12 +35,16 @@ pub struct Settings {
     pub user_volume: std::collections::HashMap<String, f32>,
     #[serde(default)]
     pub muted_users: Vec<String>,
+    /// Tallest frame a screen share is sent at: 720 or 1080 (4K screens are scaled down).
+    #[serde(default = "hd")]
+    pub share_height: u32,
 }
 
 fn one() -> f32 { 1.0 }
+fn hd() -> u32 { 1080 }
 
 impl Default for Settings {
-    fn default() -> Self { Settings { mic: None, speaker: None, noise_suppression: true, input_volume: 1.0, output_volume: 1.0, user_volume: Default::default(), muted_users: vec![] } }
+    fn default() -> Self { Settings { mic: None, speaker: None, noise_suppression: true, input_volume: 1.0, output_volume: 1.0, user_volume: Default::default(), muted_users: vec![], share_height: 1080 } }
 }
 
 /// Values the audio threads read while they run, so a slider or a switch takes effect at once.
@@ -94,15 +103,27 @@ impl Shared {
 }
 
 /// Opens a 48 kHz mono playback stream on `sink` (the default output when None or when it will not open).
-pub fn open_playback(sink: Option<&str>) -> Option<libpulse_simple_binding::Simple> {
-    use libpulse_binding::def::BufferAttr;
-    use libpulse_binding::sample::{Format, Spec};
-    use libpulse_binding::stream::Direction;
-    let spec = Spec { format: Format::S16NE, channels: 1, rate: 48_000 };
-    // About 60 ms of buffer: low delay, with room for the scheduler's hiccups.
-    let attr = BufferAttr { maxlength: u32::MAX, tlength: 48_000 / 1000 * 60 * 2, prebuf: u32::MAX, minreq: u32::MAX, fragsize: u32::MAX };
-    let open = |dev: Option<&str>| libpulse_simple_binding::Simple::new(None, "Fluxer", Direction::Playback, dev, "Voice", &spec, None, Some(&attr)).ok();
-    open(sink).or_else(|| if sink.is_some() { open(None) } else { None })
+pub fn open_playback(sink: Option<&str>) -> Option<Playback> {
+    #[cfg(target_os = "macos")]
+    { macos::open_playback(sink) }
+    #[cfg(not(target_os = "macos"))]
+    { pulse::open_playback(sink) }
+}
+
+/// Opens the microphone `device` (the default input when None or when it will not open).
+pub fn open_mic(device: Option<&str>) -> Option<Mic> {
+    #[cfg(target_os = "macos")]
+    { macos::open_mic(device) }
+    #[cfg(not(target_os = "macos"))]
+    { pulse::open_mic(device) }
+}
+
+/// The audio system's current default microphone id, for following it when no device is chosen.
+pub fn default_input() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    { macos::default_input() }
+    #[cfg(not(target_os = "macos"))]
+    { pulse::default_input() }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -129,34 +150,10 @@ pub fn save(s: &Settings) {
 
 /// Lists microphones and speakers (blocking; run it off the UI thread).
 pub fn list_devices() -> Result<Devices, String> {
-    let mut ml = Mainloop::new().ok_or("PulseAudio indisponível")?;
-    let mut ctx = Context::new(&ml, "Fluxer").ok_or("PulseAudio indisponível")?;
-    ctx.connect(None, FlagSet::NOFLAGS, None).map_err(|e| format!("PulseAudio: {e}"))?;
-    let step = |ml: &mut Mainloop| match ml.iterate(true) { IterateResult::Success(_) => Ok(()), _ => Err("PulseAudio encerrou".to_string()) };
-    loop {
-        step(&mut ml)?;
-        match ctx.get_state() { State::Ready => break, State::Failed | State::Terminated => return Err("sem conexão com o PulseAudio".into()), _ => {} }
-    }
-    let mics = Rc::new(RefCell::new(Vec::new()));
-    let speakers = Rc::new(RefCell::new(Vec::new()));
-    let pending = Rc::new(RefCell::new(2));
-    let (m, p) = (mics.clone(), pending.clone());
-    ctx.introspect().get_source_info_list(move |r| match r {
-        // A monitor is a copy of an output, not a microphone.
-        ListResult::Item(i) => if i.monitor_of_sink.is_none() && let Some(n) = &i.name {
-            m.borrow_mut().push(Device { id: n.to_string(), label: i.description.as_deref().unwrap_or(n).to_string() })
-        },
-        _ => *p.borrow_mut() -= 1,
-    });
-    let (sp, p) = (speakers.clone(), pending.clone());
-    ctx.introspect().get_sink_info_list(move |r| match r {
-        ListResult::Item(i) => if let Some(n) = &i.name { sp.borrow_mut().push(Device { id: n.to_string(), label: i.description.as_deref().unwrap_or(n).to_string() }) },
-        _ => *p.borrow_mut() -= 1,
-    });
-    while *pending.borrow() > 0 { step(&mut ml)? }
-    ctx.disconnect();
-    let (mics, speakers) = (mics.borrow().clone(), speakers.borrow().clone());
-    Ok(Devices { mics, speakers })
+    #[cfg(target_os = "macos")]
+    { macos::list_devices() }
+    #[cfg(not(target_os = "macos"))]
+    { pulse::list_devices() }
 }
 
 #[cfg(test)]
@@ -192,5 +189,22 @@ mod tests {
         assert_eq!(shared.speaking_ids(std::time::Duration::from_millis(200)), vec!["7".to_string()], "no delay before it shows");
         std::thread::sleep(std::time::Duration::from_millis(30));
         assert!(shared.speaking_ids(std::time::Duration::from_millis(10)).is_empty(), "and it goes once the hold has passed");
+    }
+
+    #[test]
+    #[ignore = "opens the machine's audio devices"]
+    fn audio_devices_are_listed_and_playback_opens() {
+        let d = list_devices().expect("audio devices");
+        eprintln!("mics: {:?}", d.mics);
+        eprintln!("speakers: {:?}", d.speakers);
+        assert!(!d.speakers.is_empty(), "a machine that runs the app has a speaker");
+        let out = open_playback(None).expect("playback stream");
+        let silence = vec![0u8; 960 * 2];
+        out.write(&silence).unwrap();
+        out.drain();
+        // The id from the menu must come back to the same device on the next launch.
+        let chosen = open_playback(Some(&d.speakers[0].id)).expect("the listed speaker");
+        chosen.write(&silence).unwrap();
+        chosen.drain();
     }
 }

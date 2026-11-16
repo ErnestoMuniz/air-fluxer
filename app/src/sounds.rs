@@ -1,5 +1,6 @@
 //! The short sounds of a voice call, synthesized (soft sine blips) so no audio files ship with the
-//! app. Each plays on its own thread through PulseAudio, on the chosen output and at its volume.
+//! app. Each plays on its own thread through the system's audio service, on the chosen output and
+//! at its volume.
 
 use crate::audio;
 

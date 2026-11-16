@@ -34,7 +34,11 @@ pub fn content_type_of(name: &str) -> &'static str {
 }
 
 fn cache_dir() -> Option<std::path::PathBuf> {
-    let base = std::env::var_os("FLUXER_RUX_CACHE_DIR").map(std::path::PathBuf::from).or_else(|| std::env::var_os("XDG_CACHE_HOME").map(std::path::PathBuf::from))
+    let configured = std::env::var_os("FLUXER_RUX_CACHE_DIR").map(std::path::PathBuf::from);
+    #[cfg(target_os = "macos")]
+    let base = configured.or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("Library").join("Caches")))?;
+    #[cfg(not(target_os = "macos"))]
+    let base = configured.or_else(|| std::env::var_os("XDG_CACHE_HOME").map(std::path::PathBuf::from))
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))?;
     Some(base.join("fluxer-rune").join("media"))
 }
@@ -88,6 +92,20 @@ pub enum Done {
     Endpoints(Result<Endpoints, String>),
     Reacted(Result<(), String>),
     ProfileSaved { guild: Option<String>, res: Result<serde_json::Value, String> },
+    /// A message was edited or deleted; the gateway echo will confirm it too.
+    Edited(Result<Message, String>),
+    Deleted { channel: String, id: String, res: Result<(), String> },
+    /// A read-state acknowledgement (failures are quiet: it is retried on the next message).
+    Acked(Result<(), String>),
+    /// The account's avatar (None when it was removed).
+    AvatarSaved(Result<serde_json::Value, String>),
+    /// The account's profile time zone.
+    TimezoneSaved(Result<serde_json::Value, String>),
+    /// Messages matching a channel search; the query is echoed so a late answer for an older
+    /// query does not replace the newer results.
+    Search { query: String, res: Result<api::SearchOutcome, String> },
+    /// A page centered on a message (a search hit outside the loaded history).
+    HistoryAround { channel: String, target: String, res: Result<Vec<Message>, String> },
     Profile { key: String, res: Result<api::Profile, String> },
     /// A message sent without a local copy (a sticker): the gateway brings it back; only failures matter.
     Posted(Result<(), String>),
@@ -192,6 +210,97 @@ impl Net {
         let (c, st) = (channel.to_string(), sticker.to_string());
         let nonce = crate::clock::now_ms().to_string();
         self.job(move || api.send_sticker(&c, &st, &nonce).map(|_| ()).map_err(|e| e.message), Done::Posted);
+    }
+
+    /// Starts ringing the other people of a DM call.
+    pub fn ring_call(&self, channel: &str, recipients: Vec<String>) {
+        let Some(api) = self.api.clone() else { return };
+        let c = channel.to_string();
+        self.job(move || api.ring_call(&c, &recipients).map_err(|e| e.message), Done::Posted);
+    }
+
+    /// Stops ringing everyone (or just `recipients`) in a DM call.
+    pub fn stop_ringing(&self, channel: &str, recipients: Option<Vec<String>>) {
+        let Some(api) = self.api.clone() else { return };
+        let c = channel.to_string();
+        self.job(move || api.stop_ringing(&c, recipients.as_deref()).map_err(|e| e.message), Done::Posted);
+    }
+
+    /// Sends `content` as a reply to `reply_to`; `local` is the optimistic message id.
+    pub fn send_reply(&self, channel: &str, local: &str, content: &str, reply_to: &str) {
+        let Some(api) = self.api.clone() else { return };
+        let (channel, local, content, reply_to) = (channel.to_string(), local.to_string(), content.to_string(), reply_to.to_string());
+        let (c, n, body, r) = (channel.clone(), local.clone(), content, reply_to);
+        self.job(move || api.send_reply(&c, &body, &n, &r).map_err(|e| e.message),
+            move |res| Done::Sent { channel, local, res });
+    }
+
+    /// Rewrites one of this account's messages.
+    pub fn edit_message(&self, channel: &str, id: &str, content: &str) {
+        let Some(api) = self.api.clone() else { return };
+        let (c, m, body) = (channel.to_string(), id.to_string(), content.to_string());
+        self.job(move || api.edit_message(&c, &m, &body).map_err(|e| e.message), Done::Edited);
+    }
+
+    /// Deletes one of this account's messages.
+    pub fn delete_message(&self, channel: &str, id: &str) {
+        let Some(api) = self.api.clone() else { return };
+        let (c, m) = (channel.to_string(), id.to_string());
+        let (channel, mid) = (c.clone(), m.clone());
+        self.job(move || api.delete_message(&c, &m).map_err(|e| e.message), move |res| Done::Deleted { channel, id: mid, res });
+    }
+
+    /// Marks a channel read up to `message_id`.
+    pub fn ack(&self, channel: &str, message_id: &str) {
+        let Some(api) = self.api.clone() else { return };
+        let (c, m) = (channel.to_string(), message_id.to_string());
+        self.job(move || api.ack(&c, &m).map_err(|e| e.message), Done::Acked);
+    }
+
+    /// Searches the server (`guild`) or a single channel.
+    pub fn search(&self, guild: Option<&str>, channel: Option<&str>, query: &str) {
+        let Some(api) = self.api.clone() else { return };
+        let (g, c, q) = (guild.map(String::from), channel.map(String::from), query.to_string());
+        let echo = q.clone();
+        self.job(move || api.search(g.as_deref(), c.as_deref(), &q).map_err(|e| e.message),
+            move |res| Done::Search { query: echo, res });
+    }
+
+    /// Loads the page around `target` when a search hit is not in the loaded history.
+    pub fn history_around(&self, channel: &str, target: &str) {
+        let Some(api) = self.api.clone() else { return };
+        let (c, t) = (channel.to_string(), target.to_string());
+        let (cc, tt) = (c.clone(), t.clone());
+        self.job(move || api.messages_around(&c, &t, crate::model::PAGE as u32).map_err(|e| e.message),
+            move |res| Done::HistoryAround { channel: cc, target: tt, res });
+    }
+
+    /// Sets (a base64 PNG) or removes the account's avatar.
+    pub fn set_avatar(&self, avatar: Option<String>) {
+        let Some(api) = self.api.clone() else { return };
+        self.job(move || api.patch_profile(None, &serde_json::json!({ "avatar": avatar })).map_err(|e| e.message), Done::AvatarSaved);
+    }
+
+    /// Saves the account's IANA time zone for the profile's local time.
+    pub fn save_timezone(&self, timezone: String) {
+        let Some(api) = self.api.clone() else { return };
+        self.job(move || api.patch_profile(None, &serde_json::json!({ "timezone": timezone })).map_err(|e| e.message), Done::TimezoneSaved);
+    }
+
+    /// Reads, squares and encodes a picture for the avatar, then saves it (blocking, off-thread).
+    pub fn upload_avatar(&self, path: std::path::PathBuf) {
+        let Some(api) = self.api.clone() else { return };
+        self.job(move || {
+            let data = std::fs::read(&path).map_err(|e| format!("não foi possível ler o arquivo: {e}"))?;
+            let image = image::load_from_memory(&data).map_err(|e| format!("imagem inválida: {e}"))?;
+            let image = image.resize_to_fill(512, 512, image::imageops::FilterType::Lanczos3);
+            let mut png = Vec::new();
+            image.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                .map_err(|e| format!("não foi possível converter a imagem: {e}"))?;
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+            api.patch_profile(None, &serde_json::json!({ "avatar": b64 })).map_err(|e| e.message)
+        }, Done::AvatarSaved);
     }
 
     /// Saves the profile form: the account's own (`guild` None) or the one in a server.

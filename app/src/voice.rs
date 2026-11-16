@@ -1,7 +1,8 @@
-//! Voice chat media: a LiveKit room on its own thread. Both directions go through PulseAudio
-//! (PipeWire serves it) so the app controls them: the microphone is read here, scaled, cleaned with
-//! RNNoise and pushed into the room as a native audio source; every remote voice is played on a
-//! stream of its own with the output volume and deafening applied.
+//! Voice chat media: a LiveKit room on its own thread. Both directions go through the system's
+//! audio service (CoreAudio on macOS, PulseAudio on Linux) so the app controls them: the
+//! microphone is read here, scaled, cleaned with RNNoise and pushed into the room as a native
+//! audio source; every remote voice is played on a stream of its own with the output volume and
+//! deafening applied.
 //!
 //! The gateway side (joining a channel, the server's token) lives in `call.rs`; this module gets
 //! an endpoint and a token and does the rest.
@@ -18,6 +19,12 @@ use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
 use livekit::webrtc::audio_stream::native::NativeAudioStream;
 use livekit::webrtc::video_frame::VideoFormatType;
 use livekit::webrtc::video_stream::native::NativeVideoStream;
+use livekit::webrtc::desktop_capturer::{DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions};
+use livekit::webrtc::video_frame::{I420Buffer, VideoFrame, VideoRotation};
+use livekit::webrtc::video_source::VideoResolution;
+use livekit::webrtc::video_source::RtcVideoSource;
+use livekit::webrtc::video_source::native::NativeVideoSource;
+use livekit::webrtc::native::yuv_helper;
 use nnnoiseless::DenoiseState;
 use rune::{Pixels, Waker};
 use std::borrow::Cow;
@@ -35,6 +42,8 @@ pub enum Cmd {
     Watch(Vec<String>),
     /// Keep the microphone open only to measure its level (the settings menu), outside a call.
     Meter(bool),
+    /// Publish this Mac's screen (the system picker on macOS chooses what to share).
+    ShareScreen(bool, u32),
     Disconnect,
 }
 
@@ -45,6 +54,12 @@ pub enum Ev {
     Failed(String),
     /// User ids of everyone speaking now, me included.
     Speaking(Vec<String>),
+    /// Round-trip time to the room, in milliseconds (WebRTC's own measurement).
+    Ping(u32),
+    /// This account started (true) or stopped (false) sharing its screen.
+    Sharing(bool),
+    /// Something failed without closing the room (a screen share denied, say).
+    Notice(String),
     /// A picture appeared or went away in `Frames`.
     Video,
 }
@@ -88,7 +103,7 @@ pub fn user_of_identity(identity: &str) -> Option<String> {
 }
 
 struct Live {
-    room: Room,
+    room: Arc<Room>,
     mic: LocalAudioTrack,
     events: UnboundedReceiver<RoomEvent>,
     capture: Option<Capture>,
@@ -103,9 +118,77 @@ struct Live {
     /// Decoders of the pictures on screen, by track id.
     video: std::collections::HashMap<String, tokio::task::JoinHandle<()>>,
     watch: std::collections::HashSet<String>,
+    /// Our own screen share, when one is running.
+    screen: Option<Screen>,
 }
 
 struct Remote { identity: String, track: String, task: tokio::task::JoinHandle<()> }
+
+/// A screen share this account is publishing: its sid, and how to stop capturing.
+struct Screen { sid: TrackSid, stop: Arc<AtomicBool> }
+
+impl Drop for Screen { fn drop(&mut self) { self.stop.store(true, Ordering::Relaxed) } }
+
+/// Captures the screen (the macOS picker chooses what) and publishes it as a screen-share track.
+async fn start_screen(room: &Room, height: u32) -> Result<Screen, String> {
+    #[cfg(target_os = "macos")]
+    {
+        // Screen Recording is a TCC permission: ask before touching ScreenCaptureKit, so the system
+        // prompt appears and a denied permission becomes a message instead of a silent black track.
+        unsafe extern "C" {
+            fn CGPreflightScreenCaptureAccess() -> bool;
+            fn CGRequestScreenCaptureAccess() -> bool;
+        }
+        // SAFETY: plain CoreGraphics C functions with no arguments.
+        let granted = unsafe { CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() };
+        if !granted {
+            return Err("Permita a Gravação de Tela em Ajustes do Sistema → Privacidade e Segurança e clique de novo (o macOS pode pedir para reabrir o app).".into());
+        }
+    }
+    let max_h = height.clamp(360, 2160);
+    let source = NativeVideoSource::new(VideoResolution { width: max_h * 16 / 9, height: max_h }, true);
+    let track = LocalVideoTrack::create_video_track("screen", RtcVideoSource::Native(source.clone()));
+    let publish = TrackPublishOptions { source: TrackSource::Screenshare, ..Default::default() };
+    let publication = room.local_participant().publish_track(LocalTrack::Video(track), publish).await
+        .map_err(|e| format!("não foi possível compartilhar a tela: {e}"))?;
+    let sid = publication.sid();
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    std::thread::Builder::new().name("fluxer-screen".into()).spawn(move || {
+        let mut options = DesktopCapturerOptions::new(DesktopCaptureSourceType::Screen);
+        options.set_include_cursor(true);
+        let Some(mut capturer) = DesktopCapturer::new(options) else {
+            eprintln!("fluxer: no desktop capturer on this system");
+            return;
+        };
+        capturer.start_capture(None, move |result| {
+            let Ok(frame) = result else { return };
+            let (mut w, mut h) = (frame.width(), frame.height());
+            if w < 2 || h < 2 { return }
+            w &= !1;
+            h &= !1;
+            let mut buffer = I420Buffer::new(w as u32, h as u32);
+            let (sy, su, sv) = buffer.strides();
+            let (y, u, v) = buffer.data_mut();
+            yuv_helper::abgr_to_i420(frame.data(), frame.stride(), y, sy, u, su, v, sv, w, h);
+            // The chosen quality at most: a 4K/5K screen costs more than the encoder can send.
+            let max_w = (max_h * 16 / 9) as i32;
+            let max_hi = max_h as i32;
+            let buffer = if w > max_w || h > max_hi {
+                let (sw, sh) = if w * max_hi >= h * max_w {
+                    (max_w, (h * max_w / w).max(2) & !1)
+                } else { ((w * max_hi / h).max(2) & !1, max_hi) };
+                buffer.scale(sw, sh)
+            } else { buffer };
+            source.capture_frame(&VideoFrame::new(VideoRotation::VideoRotation0, buffer));
+        });
+        while !flag.load(Ordering::Relaxed) {
+            capturer.capture_frame();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }).map_err(|e| format!("não foi possível iniciar a captura: {e}"))?;
+    Ok(Screen { sid, stop })
+}
 
 impl Drop for Live {
     fn drop(&mut self) {
@@ -149,30 +232,37 @@ fn level_of(pcm: &[i16]) -> u32 {
 
 /// `frames` None only measures the level.
 fn start_capture(device: Option<String>, shared: Arc<Shared>, frames: Option<UnboundedSender<Vec<i16>>>) -> Capture {
-    use libpulse_binding::def::BufferAttr;
-    use libpulse_binding::sample::{Format, Spec};
-    use libpulse_binding::stream::Direction;
-    use libpulse_simple_binding::Simple;
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
     std::thread::Builder::new().name("fluxer-mic".into()).spawn(move || {
-        let spec = Spec { format: Format::S16NE, channels: 1, rate: 48_000 };
-        let attr = BufferAttr { maxlength: u32::MAX, tlength: u32::MAX, prebuf: u32::MAX, minreq: u32::MAX, fragsize: (FRAME * 2) as u32 };
-        let open = |dev: Option<&str>| Simple::new(None, "Fluxer", Direction::Record, dev, "Voice", &spec, None, Some(&attr)).ok();
-        let Some(simple) = open(device.as_deref()).or_else(|| if device.is_some() { open(None) } else { None }) else {
-            eprintln!("fluxer: could not open the microphone {device:?}");
-            return;
-        };
         let mut rnn = DenoiseState::new();
         let (mut bytes, mut input, mut output) = ([0u8; FRAME * 2], [0f32; FRAME], [0f32; FRAME]);
+        // When following the system default, remember which device that was so a switch (AirPods
+        // plugged in, the default changed in System Settings) reopens the capture on the new one.
+        let mut followed = if device.is_none() { audio::default_input() } else { None };
         while !flag.load(Ordering::Relaxed) {
-            if simple.read(&mut bytes).is_err() { break }
-            let mut pcm: Vec<i16> = bytes.chunks_exact(2).map(|b| i16::from_ne_bytes([b[0], b[1]])).collect();
-            scale(&mut pcm, shared.in_gain());
-            if shared.denoise.load(Ordering::Relaxed) { denoise_frame(&mut rnn, &mut pcm, &mut input, &mut output) }
-            shared.set_level(level_of(&pcm));
-            if peak_of(&pcm) > SPEAK_PEAK && !shared.mic_off.load(Ordering::Relaxed) && let Some(me) = shared.me() { shared.mark_speaking(&me) }
-            if let Some(tx) = &frames && tx.send(pcm).is_err() { break }
+            let Some(mut mic) = audio::open_mic(device.as_deref()) else {
+                eprintln!("fluxer: could not open the microphone {device:?}");
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                continue;
+            };
+            let mut ticks = 0u32;
+            while !flag.load(Ordering::Relaxed) {
+                if mic.read(&mut bytes).is_err() { break }
+                let mut pcm: Vec<i16> = bytes.chunks_exact(2).map(|b| i16::from_ne_bytes([b[0], b[1]])).collect();
+                scale(&mut pcm, shared.in_gain());
+                if shared.denoise.load(Ordering::Relaxed) { denoise_frame(&mut rnn, &mut pcm, &mut input, &mut output) }
+                shared.set_level(level_of(&pcm));
+                if peak_of(&pcm) > SPEAK_PEAK && !shared.mic_off.load(Ordering::Relaxed) && let Some(me) = shared.me() { shared.mark_speaking(&me) }
+                if let Some(tx) = &frames && tx.send(pcm).is_err() { break }
+                ticks += 1;
+                // About once a second: did the system default input change under us?
+                if device.is_none() && ticks % 100 == 0 {
+                    let now = audio::default_input();
+                    if now != followed { followed = now; break }
+                }
+            }
+            shared.set_level(0);
         }
         shared.set_level(0);
     }).ok();
@@ -255,6 +345,20 @@ fn show_video(mut stream: NativeVideoStream, key: String, frames: Frames, tell: 
     })
 }
 
+/// The room's round-trip time in milliseconds, as the web app shows it: the connection actually
+/// in use (the nominated ICE candidate pair), not any pair that was ever tried. A pair that lost
+/// to the chosen one, often a relay, keeps an old and much higher measurement. The RTCP report for
+/// our microphone is not used even as a fallback: it includes the server's reporting delay and
+/// reads about 3x too high, so until a pair is nominated the dock says "measuring".
+fn rtt_ms(stats: &[livekit::webrtc::stats::RtcStats]) -> Option<u32> {
+    use livekit::webrtc::stats::RtcStats;
+    stats.iter().filter_map(|s| match s {
+        RtcStats::CandidatePair(c) if c.candidate_pair.nominated && c.candidate_pair.current_round_trip_time > 0.0 =>
+            Some((c.candidate_pair.current_round_trip_time * 1000.0).round() as u32),
+        _ => None,
+    }).min()
+}
+
 async fn engine(mut cmds: UnboundedReceiver<Cmd>, out: mpsc::Sender<Ev>, wake: Waker, shared: Arc<Shared>, frames: Frames) {
     let send = |e: Ev| { let _ = out.send(e); wake(); };
     let tell = { let out = out.clone(); let wake = wake.clone(); move || { let _ = out.send(Ev::Video); wake(); } };
@@ -262,11 +366,16 @@ async fn engine(mut cmds: UnboundedReceiver<Cmd>, out: mpsc::Sender<Ev>, wake: W
     let mut live: Option<Live> = None;
     // The green rings come from the sound itself, checked often so they show at once.
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(30));
+    // The room's round-trip time, asked from WebRTC every few seconds; not every frame (a stats
+    // report walks every stream) and not never (it changes with the network).
+    let mut ping = tokio::time::interval(std::time::Duration::from_secs(3));
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut shown: Vec<String> = Vec::new();
     let (mut meter, mut want_meter, mut mic_choice) = (None::<Capture>, false, None::<String>);
     loop {
         // While in a room, its events and the commands are served together.
         let in_room = live.is_some();
+        let probe = live.as_ref().map(|l| l.room.clone());
         let ev = async {
             match live.as_mut() { Some(l) => l.events.recv().await, None => std::future::pending().await }
         };
@@ -274,6 +383,15 @@ async fn engine(mut cmds: UnboundedReceiver<Cmd>, out: mpsc::Sender<Ev>, wake: W
             _ = tick.tick(), if in_room => {
                 let now = shared.speaking_ids(SPEAK_HOLD);
                 if now != shown { shown = now.clone(); send(Ev::Speaking(now)) }
+            }
+            _ = ping.tick(), if in_room => {
+                // The whole connection's report, not the microphone's: a track's own report has no
+                // candidate pairs, so the ping would fall back to the (higher) RTCP figure.
+                if let Some(room) = probe
+                    && let Ok(all) = room.get_stats().await {
+                    let stats: Vec<_> = all.publisher_stats.into_iter().chain(all.subscriber_stats).collect();
+                    if let Some(ms) = rtt_ms(&stats) { send(Ev::Ping(ms)) }
+                }
             }
             cmd = cmds.recv() => {
                 let Some(cmd) = cmd else { break };
@@ -326,6 +444,20 @@ async fn engine(mut cmds: UnboundedReceiver<Cmd>, out: mpsc::Sender<Ev>, wake: W
                         want_meter = on;
                         meter = None;
                         if on && live.is_none() { meter = Some(start_capture(mic_choice.clone(), shared.clone(), None)) }
+                    }
+                    Cmd::ShareScreen(on, height) => {
+                        let Some(l) = live.as_mut() else { continue };
+                        if on {
+                            if l.screen.is_none() {
+                                match start_screen(&l.room, height).await {
+                                    Ok(s) => { l.screen = Some(s); send(Ev::Sharing(true)) }
+                                    Err(e) => send(Ev::Notice(e)),
+                                }
+                            }
+                        } else if let Some(s) = l.screen.take() {
+                            let _ = l.room.local_participant().unpublish_track(&s.sid).await;
+                            send(Ev::Sharing(false))
+                        }
                     }
                 }
             }
@@ -415,12 +547,36 @@ async fn connect(endpoint: &str, token: &str, e2ee_key: Option<String>, muted: b
     let publish = TrackPublishOptions { source: TrackSource::Microphone, ..Default::default() };
     room.local_participant().publish_track(LocalTrack::Audio(track.clone()), publish).await
         .map_err(|e| format!("não foi possível abrir o microfone: {e}"))?;
-    Ok(Live { room, mic: track, events, capture, frames, feed, remote: Default::default(), speaker: settings.speaker, video: Default::default(), watch: Default::default() })
+    Ok(Live { room: Arc::new(room), mic: track, events, capture, frames, feed, remote: Default::default(), speaker: settings.speaker, video: Default::default(), watch: Default::default(), screen: None })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn creating_the_webrtc_factory_does_not_abort_on_this_platform() {
+        // macOS used to abort here: WebRTC's `+[NSString stringForStdString:]` category was not
+        // linked (see app/build.rs). A dead endpoint must produce an error, not a crash.
+        let shared = crate::audio::Shared::new(&Settings::default());
+        let r = tokio::time::timeout(std::time::Duration::from_secs(10),
+            connect("wss://127.0.0.1:9", "not-a-token", None, true, Settings::default(), shared)).await;
+        match r {
+            Ok(r) => assert!(r.is_err(), "a dead endpoint must not produce a room"),
+            Err(_) => eprintln!("the dead endpoint kept retrying; the factory was created"),
+        }
+    }
+
+    #[test]
+    fn the_round_trip_time_comes_from_the_connection_in_use() {
+        use livekit::webrtc::stats::RtcStats;
+        let rtcp: RtcStats = serde_json::from_value(serde_json::json!({"type": "remote-inbound-rtp", "roundTripTime": 0.180})).unwrap();
+        let used: RtcStats = serde_json::from_value(serde_json::json!({"type": "candidate-pair", "nominated": true, "currentRoundTripTime": 0.042})).unwrap();
+        let lost: RtcStats = serde_json::from_value(serde_json::json!({"type": "candidate-pair", "nominated": false, "currentRoundTripTime": 0.400})).unwrap();
+        assert_eq!(rtt_ms(&[lost.clone(), rtcp.clone(), used]), Some(42), "the nominated pair wins over the RTCP report and over pairs not in use");
+        assert_eq!(rtt_ms(&[lost, rtcp]), None, "the RTCP report is not a stand-in");
+        assert_eq!(rtt_ms(&[]), None);
+    }
 
     #[test]
     fn rnnoise_processes_frames_and_takes_energy_out_of_hiss() {

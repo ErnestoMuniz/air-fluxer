@@ -23,6 +23,9 @@ pub struct Saved {
 pub fn dir() -> Option<PathBuf> {
     // Tests and portable setups point this elsewhere so they never touch a real session.
     if let Some(d) = std::env::var_os("FLUXER_RUX_CONFIG_DIR") { return Some(PathBuf::from(d)) }
+    #[cfg(target_os = "macos")]
+    let base = std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library").join("Application Support"))?;
+    #[cfg(not(target_os = "macos"))]
     let base = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
     Some(base.join("fluxer-rune"))
@@ -30,9 +33,59 @@ pub fn dir() -> Option<PathBuf> {
 
 fn file() -> Option<PathBuf> { Some(dir()?.join("session.json")) }
 
-pub fn load() -> Option<Saved> { load_from(&file()?) }
+/// macOS keeps the token in the login keychain; the JSON file keeps the rest. The `security`
+/// command is the system's own tool, so no extra framework is linked.
+#[cfg(target_os = "macos")]
+const KEYCHAIN_SERVICE: &str = "fluxer-rune";
+
+#[cfg(target_os = "macos")]
+fn keychain_set(user: &str, token: &str) -> bool {
+    std::process::Command::new("/usr/bin/security")
+        .args(["add-generic-password", "-U", "-s", KEYCHAIN_SERVICE, "-a", user, "-w", token])
+        .status().map(|s| s.success()).unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn keychain_get(user: &str) -> Option<String> {
+    let out = std::process::Command::new("/usr/bin/security")
+        .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", user, "-w"])
+        .output().ok()?;
+    if !out.status.success() { return None }
+    let token = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (!token.is_empty()).then_some(token)
+}
+
+pub fn load() -> Option<Saved> {
+    let mut saved = load_from(&file()?)?;
+    #[cfg(target_os = "macos")]
+    {
+        if saved.token.is_empty() {
+            saved.token = keychain_get(&saved.user_id)?;
+        } else if keychain_set(&saved.user_id, &saved.token)
+            && keychain_get(&saved.user_id).as_deref() == Some(saved.token.as_str())
+        {
+            // Migrate the plaintext token out of the file only after reading it back.
+            let mut clean = saved.clone();
+            clean.token.clear();
+            if let Some(f) = file() { let _ = save_to(&f, &clean); }
+        }
+    }
+    if saved.token.is_empty() { return None }
+    Some(saved)
+}
 
 pub fn save(s: &Saved) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let path = file().ok_or(std::io::ErrorKind::NotFound)?;
+        if keychain_set(&s.user_id, &s.token)
+            && keychain_get(&s.user_id).as_deref() == Some(s.token.as_str())
+        {
+            let mut clean = s.clone();
+            clean.token.clear();
+            return save_to(&path, &clean);
+        }
+    }
     save_to(&file().ok_or(std::io::ErrorKind::NotFound)?, s)
 }
 

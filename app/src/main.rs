@@ -5,6 +5,7 @@
 mod anim;
 mod icons;
 mod animsize;
+mod appearance;
 mod auth;
 mod audio;
 mod call;
@@ -12,6 +13,7 @@ mod clock;
 mod gateway;
 mod model;
 mod net;
+mod notify;
 mod picker;
 mod prefs;
 mod richtext;
@@ -44,6 +46,70 @@ pub struct Ctx { pub user: User, pub x: f32, pub y: f32 }
 /// where the pointer was, for a mention with no element of its own to anchor beside.
 pub struct Prof { pub user: User, pub anchor: String, pub at: Option<(f32, f32)> }
 
+/// The menu of one message (right click): the message, and where the pointer was.
+pub struct MsgMenu { pub msg: Msg, pub x: f32, pub y: f32 }
+
+/// What the message box is doing besides writing a new message: answering one, or rewriting one.
+#[derive(Clone, Debug)]
+pub struct Draft {
+    /// The message being answered (`Quoted` is what the reply bar and the server payload use).
+    pub reply: Option<Quoted>,
+    /// The id of this account's message being edited; the box holds its text.
+    pub editing: Option<String>,
+}
+
+/// The channel search: the box, the query of the answer on screen, and the results.
+pub struct Search {
+    pub open: bool,
+    pub input: TextEdit,
+    pub query: String,
+    pub results: Vec<fluxer_client::api::Message>,
+    pub loading: bool,
+    pub indexing: bool,
+    pub error: Option<String>,
+}
+
+impl Default for Search {
+    fn default() -> Self { Search { open: false, input: TextEdit::new(""), query: String::new(), results: vec![], loading: false, indexing: false, error: None } }
+}
+
+pub fn run_search(s: &mut State) {
+    let Some(cid) = s.chat.channel_id().map(String::from) else { return };
+    let q = s.search.input.text.trim().to_string();
+    if q.is_empty() { return }
+    let guild = s.chat.nav.guild.and_then(|g| s.chat.guilds.get(g)).map(|g| g.id.clone());
+    s.search.query = q.clone();
+    s.search.loading = true;
+    s.search.indexing = false;
+    s.search.error = None;
+    // A server is searched as a whole; a DM channel has no server, so it searches itself.
+    if guild.is_some() { s.net.search(guild.as_deref(), None, &q) } else { s.net.search(None, Some(&cid), &q) }
+}
+
+fn on_search(s: &mut State, query: String, res: Result<fluxer_client::api::SearchOutcome, String>) {
+    if s.search.query != query { return }
+    s.search.loading = false;
+    match res {
+        Ok(fluxer_client::api::SearchOutcome::Indexing) => { s.search.indexing = true; s.search.results.clear() }
+        Ok(fluxer_client::api::SearchOutcome::Hits(msgs)) => s.search.results = msgs,
+        Err(e) => s.search.error = Some(e),
+    }
+}
+
+/// A search hit was pressed: open its channel and put it in the middle of the list.
+pub fn open_search_hit(s: &mut State, tx: &mut Tx, channel: &str, id: &str) {
+    s.search.open = false;
+    if s.chat.channel_id() != Some(channel) && !s.chat.open_channel_by_id(channel) { return }
+    s.visible = 0..0;
+    reconcile(s);
+    if s.chat.logs.get(channel).is_some_and(|l| l.msgs.iter().any(|m| m.id == id)) {
+        jump_to(s, tx, id);
+    } else {
+        s.pending_jump = Some((channel.to_string(), id.to_string()));
+        s.net.history_around(channel, id);
+    }
+}
+
 pub struct State {
     pub rail_hover: Option<String>,
     pub settings_open: bool,
@@ -61,12 +127,29 @@ pub struct State {
     pub highlighted: Option<(String, std::time::Instant)>,
     /// Where the pointer last was, tracked live so a mention can open its card beside it.
     pub pointer: rune::Live<[f32; 2]>,
+    /// The members panel's filter (names and nicknames).
+    pub member_search: TextEdit,
+    /// The status this account shows (online/idle/dnd/invisible), and its little menu.
+    pub my_status: String,
+    pub status_menu: bool,
     /// The video attachment playing inline, if any (attachment id, player).
     pub video: Option<(String, rune::Player)>,
     pub customize_open: bool,
     /// A short note about something that failed (a send), shown above the message box.
     pub notice: Option<String>,
     pub ctx: Option<Ctx>,
+    /// The message whose right-click menu is open, and where.
+    pub msg_menu: Option<MsgMenu>,
+    /// Answering a message, or rewriting one.
+    pub draft_mode: Draft,
+    /// The (channel, message) already acknowledged to the server, so one ack goes per message.
+    acked: Option<(String, String)>,
+    /// The channel search (header magnifier).
+    pub search: Search,
+    /// A message to center once its around-page arrives (a search hit outside the loaded history).
+    pending_jump: Option<(String, String)>,
+    /// A DM call ringing for this account (channel id).
+    pub incoming_call: Option<String>,
     pub profile: Option<Prof>,
     /// Profiles fetched so far, by `net::profile_key`.
     pub profiles: std::collections::HashMap<String, fluxer_client::api::Profile>,
@@ -140,10 +223,12 @@ fn demo_chat() -> Chat {
 
 impl Default for State {
     fn default() -> Self {
+        let prefs = prefs::load();
+        crate::appearance::set(prefs.appearance);
         State {
             rail_hover: None, settings_open: false, pf: Default::default(), prof: [TextEdit::new(""), TextEdit::new(""), TextEdit::new(""), TextEdit::new("")],
-            picker: Default::default(), prefs: prefs::load(), plus_open: false, msg_hover: None, react_picker: None, highlighted: None, pointer: rune::Live::new([0.0, 0.0]), video: None, customize_open: false, notice: None,
-            ctx: None, profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
+            picker: Default::default(), prefs: prefs.clone(), plus_open: false, msg_hover: None, react_picker: None, highlighted: None, pointer: rune::Live::new([0.0, 0.0]), member_search: TextEdit::new(""), my_status: prefs.status, status_menu: false, video: None, customize_open: false, notice: None,
+            ctx: None, msg_menu: None, draft_mode: Draft { reply: None, editing: None }, acked: None, search: Default::default(), pending_jump: None, incoming_call: None, profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
             intro: 0.0, intro_t0: None, chat: demo_chat(), net: net::Net::default(), draft: TextEdit::new(""), attachments: Vec::new(), gateway: None, subscribed: None, synced_guilds: Default::default(), show_members: true, call: Default::default(), focused: true, visible: 0..0, typing_wake: false, thumb: Default::default(),
         }
     }
@@ -203,7 +288,15 @@ fn apply(s: &mut State, e: Event) -> bool {
                 (Some(c), Some(m)) => s.chat.on_ack(c, m),
                 _ => false,
             },
-            "MESSAGE_CREATE" => Message::from_json(&d).map(|m| s.chat.on_message(m)).is_some(),
+            "MESSAGE_CREATE" => match Message::from_json(&d) {
+                Some(m) => {
+                    let copy = m.clone();
+                    s.chat.on_message(m);
+                    if !s.focused { crate::notify::incoming(s, &copy) }
+                    true
+                }
+                None => false,
+            },
             "MESSAGE_UPDATE" => Message::from_json(&d).is_some_and(|m| s.chat.on_message_updated(m)),
             "MESSAGE_REACTION_ADD" | "MESSAGE_REACTION_REMOVE" => {
                 let me = s.chat.me.as_ref().map(|u| u.id.as_str());
@@ -220,6 +313,20 @@ fn apply(s: &mut State, e: Event) -> bool {
                 (Some(c), Some(id)) => s.chat.on_message_deleted(c, id),
                 _ => false,
             },
+            "CALL_CREATE" => {
+                let me = s.chat.me.as_ref().map(|u| u.id.clone());
+                let ringing = d.get("ringing").and_then(Value::as_array).into_iter().flatten()
+                    .filter_map(Value::as_str).any(|id| Some(id) == me.as_deref());
+                if ringing && let Some(c) = str_at(&d, &["channel_id"]) { s.incoming_call = Some(c.into()); true } else { false }
+            }
+            "CALL_DELETE" => {
+                if let Some(c) = str_at(&d, &["channel_id"]) {
+                    if s.incoming_call.as_deref() == Some(c) { s.incoming_call = None }
+                    if s.call.active() && s.call.channel_id.as_deref() == Some(c) { s.call.leave(s.gateway.as_ref()); }
+                    true
+                } else { false }
+            }
+            "CALL_UPDATE" => false,
             _ => false,
         },
         Event::Payload(_) => false,
@@ -341,6 +448,20 @@ fn on_net(s: &mut State, d: net::Done) -> bool {
         net::Done::Reacted(Err(e)) => { s.notice = Some(format!("Não foi possível reagir: {e}")); true }
         net::Done::Reacted(Ok(())) => false,
         net::Done::ProfileSaved { guild, res } => { ui::settings::on_saved(s, guild, res); true }
+        net::Done::Edited(Ok(m)) => s.chat.on_message_updated(m),
+        net::Done::Edited(Err(e)) => { s.notice = Some(format!("Não foi possível editar: {e}")); true }
+        net::Done::Deleted { channel, id, res: Ok(()) } => s.chat.on_message_deleted(&channel, &id),
+        net::Done::Deleted { res: Err(e), .. } => { s.notice = Some(format!("Não foi possível apagar: {e}")); true }
+        net::Done::Acked(_) => false,
+        net::Done::AvatarSaved(res) => { ui::settings::on_avatar(s, res); true }
+        net::Done::TimezoneSaved(res) => { ui::settings::on_timezone(s, res); true }
+        net::Done::Search { query, res } => { on_search(s, query, res); true }
+        net::Done::HistoryAround { channel, target, res: Ok(msgs) } => {
+            s.chat.load_around(&channel, msgs);
+            s.pending_jump = Some((channel, target));
+            true
+        }
+        net::Done::HistoryAround { res: Err(e), .. } => { s.notice = Some(format!("Não foi possível abrir a mensagem: {e}")); true }
         net::Done::Profile { key, res: Ok(p) } => {
             if let (Some(media), Some(h)) = (s.chat.media.clone(), p.banner.as_deref()) {
                 if let Some(uid) = key.split('@').next() { s.net.want_image_first(&fluxer_client::api::banner_still_url(&media, uid, h, 600)) }
@@ -365,6 +486,16 @@ fn reconcile(s: &mut State) {
             log.loading = true;
             s.net.history(&cid, None);
         }
+    }
+    // Reading is acknowledging: the newest real message of the open channel, once, while the
+    // window has the focus. The server keeps the unread badges and the "new messages" line.
+    if s.focused && s.net.has_api() && let Some(cid) = s.chat.channel_id().map(String::from)
+        && let Some(mid) = s.chat.logs.get(&cid).and_then(|l| l.msgs.iter().rev()
+            .find(|m| m.delivery == Delivery::Sent && !m.id.starts_with("local-")).map(|m| m.id.clone()))
+        && s.acked.as_ref() != Some(&(cid.clone(), mid.clone()))
+    {
+        s.net.ack(&cid, &mid);
+        s.acked = Some((cid, mid));
     }
     let wanted = wanted_all(s);
     for url in &wanted { s.net.want_image(url) }
@@ -430,6 +561,11 @@ fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
     if std::mem::take(&mut s.typing_wake) { tx.wake_after(std::time::Duration::from_millis(roster::TYPING_TTL_MS as u64 + 250)) }
     let images_before = s.net.busy_with_images();
     for d in s.net.drain() { changed |= on_net(s, d) }
+    // A search hit's around-page arrived: center it now that its row exists.
+    if let Some((channel, id)) = s.pending_jump.take() {
+        if s.chat.channel_id() == Some(channel.as_str()) { tx.scroll_center(format!("rows/{id}")) }
+        else { s.pending_jump = Some((channel, id)) }
+    }
     changed |= s.call.poll(s.gateway.as_ref());
     if s.picker.poll() { picker_images(s); changed = true }
     // A finished download changes what draws; so does a queue that just emptied.
@@ -473,11 +609,20 @@ pub fn jump_to(s: &mut State, tx: &mut rune::Tx, id: &str) {
 /// Clicking a voice channel joins it (unless already in it) and shows the call's mosaic.
 pub fn join_voice(s: &mut State, channel: &str) {
     let Some(guild) = s.chat.voice_channel(channel).map(|(g, _)| g.id.clone()) else { return };
-    s.call.join(s.gateway.as_ref(), &guild, channel);
+    s.call.join(s.gateway.as_ref(), Some(&guild), channel);
     if s.call.channel_id.as_deref() == Some(channel) {
         s.call.view = true;
         s.chat.voice_view = None;
     }
+}
+
+/// Starts (or joins) the DM call of the open direct-message channel.
+pub fn start_dm_call(s: &mut State, channel: &str) {
+    let peer = s.chat.dms.iter().find(|c| c.id == channel).and_then(|c| c.peer.as_ref()).map(|p| p.id.clone());
+    if let Some(p) = peer { s.net.ring_call(channel, vec![p]) }
+    s.incoming_call = None;
+    s.call.join(s.gateway.as_ref(), None, channel);
+    s.call.view = true;
 }
 
 pub fn watch_stream(s: &mut State, connection: &str, on: bool) { s.call.set_watching(s.gateway.as_ref(), connection, on) }
@@ -486,8 +631,18 @@ pub fn leave_voice(s: &mut State) { s.call.leave(s.gateway.as_ref()) }
 pub fn toggle_mute(s: &mut State) { s.call.toggle_mute(s.gateway.as_ref()) }
 pub fn toggle_deafen(s: &mut State) { s.call.toggle_deafen(s.gateway.as_ref()) }
 
-pub fn set_focus(s: &mut State, focused: bool) {
-    s.focused = focused;
+/// Changes what status this account shows (the gateway tells everyone else; invisible looks offline).
+pub fn set_status(s: &mut State, status: &str) {
+    s.my_status = status.to_string();
+    s.prefs.status = status.to_string();
+    crate::prefs::save(&s.prefs);
+    if let Some(me) = &s.chat.me { s.chat.roster.status.insert(me.id.clone(), status.to_string()); }
+    if let Some(gw) = &s.gateway {
+        gw.send(Payload { op: Opcode::PRESENCE_UPDATE, d: Some(serde_json::json!({ "status": status })), s: None, t: None });
+    }
+}
+
+pub fn set_focus(s: &mut State, focused: bool) {    s.focused = focused;
     s.net.set_focused(focused);
     // Losing the focus stops the animations (their pictures are let go in time); gaining it asks for those on screen again.
     reconcile(s);
@@ -511,6 +666,8 @@ pub fn open_guild(s: &mut State, g: Option<usize>) {
 pub fn open_channel(s: &mut State, i: usize) {
     s.call.view = false;
     s.visible = 0..0;
+    s.draft_mode.reply = None;
+    if s.draft_mode.editing.take().is_some() { s.draft.clear() }
     s.chat.open_channel(i);
     reconcile(s);
     remember(s);
@@ -569,8 +726,44 @@ pub fn send(s: &mut State) {
     let body = s.draft.text.trim().to_string();
     if !s.attachments.is_empty() { return send_attachments(s, body) }
     if body.is_empty() { return }
+    let Some(cid) = s.chat.channel_id().map(String::from) else { return };
+    if let Some(id) = s.draft_mode.editing.clone() {
+        s.notice = None;
+        if s.net.has_api() { s.net.edit_message(&cid, &id, &body) }
+        else if let Some(m) = s.chat.logs.get_mut(&cid).and_then(|l| l.msgs.iter_mut().find(|m| m.id == id)) { m.body = body; m.edited = true }
+        s.draft_mode.editing = None;
+        s.draft.clear();
+        return;
+    }
+    if let Some(reply) = s.draft_mode.reply.take() {
+        send_reply_body(s, body, reply);
+        s.draft.clear();
+        return;
+    }
     send_body(s, body);
-    s.draft = TextEdit::new("");
+    // Cleared in place, not replaced: a fresh TextEdit would drop the caret and the next message
+    // would need another click on the box.
+    s.draft.clear();
+}
+
+/// Sends `body` answering `reply`: shown at once with its quote, confirmed by the server.
+fn send_reply_body(s: &mut State, body: String, reply: Quoted) {
+    let Some(cid) = s.chat.channel_id().map(String::from) else { return };
+    s.notice = None;
+    if s.net.has_api() {
+        if let Some(local) = s.chat.push_pending(&cid, body.clone()) {
+            if let Some(m) = s.chat.logs.get_mut(&cid).and_then(|l| l.msgs.iter_mut().find(|m| m.id == local)) { m.reply = Some(reply.clone()) }
+            match reply.id.as_deref() {
+                Some(id) => s.net.send_reply(&cid, &local, &body, id),
+                None => s.net.send(&cid, &local, &body),
+            }
+        }
+    } else if let Some(local) = s.chat.push_pending(&cid, body) {
+        if let Some(m) = s.chat.logs.get_mut(&cid).and_then(|l| l.msgs.iter_mut().find(|m| m.id == local)) {
+            m.reply = Some(reply);
+            m.delivery = Delivery::Sent;
+        }
+    }
 }
 
 /// Sends the waiting attachments with `body` as the message's text, and clears the message box.
@@ -587,6 +780,8 @@ fn send_attachments(s: &mut State, body: String) {
 pub fn send_body(s: &mut State, body: String) {
     let Some(cid) = s.chat.channel_id().map(String::from) else { return };
     s.notice = None;
+    s.draft_mode.reply = None;
+    s.draft_mode.editing = None;
     if s.net.has_api() {
         if let Some(local) = s.chat.push_pending(&cid, body.clone()) { s.net.send(&cid, &local, &body) }
     } else if let Some(local) = s.chat.push_pending(&cid, body) {
@@ -606,7 +801,7 @@ pub fn send_sticker(s: &mut State, id: &str) {
 /// A GIF or saved picture goes out as its link; the server turns it into the picture.
 pub fn send_link(s: &mut State, url: String) { send_body(s, url); s.picker.close(); reconcile(s) }
 
-pub fn insert_text(s: &mut State, text: &str) { s.draft = TextEdit::new(format!("{}{text}", s.draft.text)) }
+pub fn insert_text(s: &mut State, text: &str) { let t = format!("{}{text}", s.draft.text); s.draft.replace_text(t) }
 
 /// Asks the image cache for what the open picker tab shows.
 pub fn picker_images(s: &mut State) {
@@ -637,7 +832,7 @@ fn demo_call(s: &mut State) {
 }
 
 fn main() {
-    rune::run(AppSpec::<State> {
+    let spec = AppSpec::<State> {
         scenes: &[
             ("login", |s| { s.intro = 1.0; s.screen = Screen::Login }),
             ("ip", |s| {
@@ -654,6 +849,7 @@ fn main() {
             // The call's mosaic with a screen share, for looking at it without a server.
             ("call", |s| { demo_call(s); }),
             ("call-watch", |s| { demo_call(s); s.call.watching.push("demo:demo-v0:c1".into()); }),
+            ("call-ping", |s| { demo_call(s); s.call.ping = Some(42); s.call.ping_tip = true; }),
             ("dm", |s| { s.chat.open_guild(None); }),
             // The message list's scroll thumb, shown as with the pointer near it (see `--scene scroll`).
             ("scroll", |s| { s.thumb.pin(); }),
@@ -684,6 +880,36 @@ fn main() {
                 s.prof[2] = TextEdit::new("Doc, I'm from the future.");
                 s.prof[3] = TextEdit::new("#4641D9");
                 s.pf.base = ["Muniz".into(), String::new(), "Doc, I'm from the future.".into(), "#4641D9".into()];
+            }),
+            // The settings dialog's voice page, with a made-up device list (see `--scene settings-voice`).
+            ("settings-voice", |s| {
+                s.settings_open = true;
+                if let Some(me) = &mut s.chat.me {
+                    me.id = "1567191623270400000".into();
+                    me.username = "muniz".into();
+                    me.global_name = Some("Muniz".into());
+                    me.discriminator = Some("9205".into());
+                }
+                let dev = |id: &str, label: &str| crate::audio::Device { id: id.into(), label: label.into() };
+                s.call.devices = Some(crate::audio::Devices {
+                    mics: vec![dev("coreaudio:BuiltInMicrophoneDevice", "Microfone (MacBook Air)"),
+                        dev("coreaudio:AppleUSBAudioEngine:Kingston:HyperX", "HyperX Virtual Surround Sound")],
+                    speakers: vec![dev("coreaudio:BuiltInSpeakerDevice", "Alto-falantes (MacBook Air)"),
+                        dev("coreaudio:05E30224-0000-0000-071E-010380351E78", "24G2W1G4")],
+                });
+                s.call.settings.mic = Some("coreaudio:AppleUSBAudioEngine:Kingston:HyperX".into());
+                s.pf.page = crate::ui::settings::Page::Voice;
+            }),
+            // The right-click menu of a message (see `--scene msg-menu`).
+            ("msg-menu", |s| {
+                let me = s.chat.me.clone().expect("demo user");
+                let m = Msg::local("mine".into(), me, "olha esse menu".into(), Delivery::Sent);
+                s.msg_menu = Some(MsgMenu { msg: m, x: 640.0, y: 360.0 });
+            }),
+            // The message box answering an earlier message (see `--scene reply-bar`).
+            ("reply-bar", |s| {
+                let me = s.chat.me.clone().expect("demo user");
+                s.draft_mode.reply = Some(Quoted { id: Some("9998".into()), author: me, content: "mensagem original".into(), has_attachments: false });
             }),
             // Embed + video + role icon proofs (see `--scene extras`).
             ("extras", |s| {
@@ -809,8 +1035,10 @@ fn main() {
         ],
         setup: Some(setup),
         poll: Some(poll),
+        on_key: Some(|s, ev, _| matches!(ev.key, rune::Key::Escape) && ui::settings::escape(s)),
         ..AppSpec::new("Fluxer", (1100.0, 700.0), State::default, ui::view)
-    });
+    };
+    rune::run(spec);
 }
 
 #[cfg(test)]
@@ -850,12 +1078,20 @@ mod tests {
         dispatch(&format!(r#"{{"op":0,"t":"MESSAGE_CREATE","d":{{"id":"{id}","channel_id":"{channel}","content":"{text}","author":{{"id":"2","username":"ana"}}}}}}"#))
     }
 
+    /// CPU time of this thread, so tests running beside this one don't count against it.
+    fn thread_cpu() -> std::time::Duration {
+        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: a valid timespec is handed to clock_gettime, which fills it in.
+        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+        std::time::Duration::new(ts.tv_sec.max(0) as u64, ts.tv_nsec.max(0) as u32)
+    }
+
     #[test]
     fn ten_thousand_messages_lay_out_only_the_visible_rows() {
         let mut rt = rt();
-        let t = Instant::now();
+        let t = thread_cpu();
         for _ in 0..120 { rt.frame(1.0 / 60.0); }
-        let per_frame = t.elapsed().as_secs_f64() * 1000.0 / 120.0;
+        let per_frame = (thread_cpu() - t).as_secs_f64() * 1000.0 / 120.0;
         eprintln!("idle frame cpu: {per_frame:.2} ms");
         assert!(rt.find("9999").is_some(), "stick_bottom opens on the newest message");
         assert!(rt.find("0").is_none(), "rows far from the viewport are not built");
@@ -866,12 +1102,34 @@ mod tests {
     fn demo_send_appears_at_once_and_clears_the_draft() {
         let mut s = State::default();
         s.draft = TextEdit::new("oi  ");
+        s.draft.focused = true;
         send(&mut s);
         let log = s.chat.log().unwrap();
         assert_eq!((log.msgs.last().unwrap().body.as_str(), &log.msgs.last().unwrap().delivery), ("oi", &Delivery::Sent));
         assert!(s.draft.text.is_empty());
+        assert!(s.draft.focused, "the box keeps the caret for the next message");
         send(&mut s);
         assert_eq!(s.chat.log().unwrap().msgs.len(), 10_001, "an empty draft sends nothing");
+    }
+
+    #[test]
+    fn a_reply_carries_its_quote_and_an_edit_rewrites_in_place() {
+        let mut s = State::default();
+        let quoted = fluxer_client::api::Quoted { id: Some("5".into()), author: s.chat.me.clone().unwrap(), content: "original".into(), has_attachments: false };
+        s.draft = TextEdit::new("respondendo");
+        s.draft_mode.reply = Some(quoted);
+        send(&mut s);
+        let last = s.chat.log().unwrap().msgs.last().unwrap().clone();
+        assert_eq!(last.body, "respondendo");
+        assert_eq!(last.reply.and_then(|r| r.id).as_deref(), Some("5"), "the reply keeps what it answers");
+        assert!(s.draft_mode.reply.is_none());
+
+        let id = last.id;
+        s.draft = TextEdit::new("editada");
+        s.draft_mode.editing = Some(id.clone());
+        send(&mut s);
+        assert_eq!(s.chat.log().unwrap().msgs.iter().find(|m| m.id == id).unwrap().body, "editada");
+        assert!(s.draft_mode.editing.is_none());
     }
 
     #[test]
@@ -991,6 +1249,101 @@ mod tests {
         assert!(poll(&mut s, 0.0, &mut Tx::default()));
         assert!(s.screen == Screen::Login && s.session.is_none());
         assert!(s.auth.error.as_deref().is_some_and(|e| e.contains("sessão")));
+    }
+
+    #[test]
+    fn the_voice_signal_explains_the_ping_on_hover() {
+        let env = Env { system_dark: true, scale: 2.0 };
+        let mut rt = Runtime::new(State::default(), ui::view, (1100.0, 700.0), env);
+        rt.update(|s, _| {
+            s.call.phase = crate::call::Phase::Connected;
+            s.call.channel_id = Some("demo-v0".into());
+            s.call.ping = Some(42);
+            s.call.ping_tip = true;
+        });
+        rt.frame(0.0);
+        assert!(rt.find("voice-signal").is_some());
+        assert!(rt.find("voice-ping").is_some(), "hovering the signal shows the round-trip time");
+        rt.update(|s, _| s.call.ping_tip = false);
+        rt.frame(0.0);
+        assert!(rt.find("voice-ping").is_none(), "the tip goes with the pointer");
+    }
+
+    #[test]
+    fn the_settings_dialog_lists_the_audio_devices() {
+        isolate();
+        let env = Env { system_dark: true, scale: 2.0 };
+        let mut rt = Runtime::new(State::default(), ui::view, (1100.0, 700.0), env);
+        rt.update(|s, _| {
+            s.chat.me = Some(fluxer_client::api::User { id: "1".into(), username: "eu".into(), global_name: None, avatar: None, discriminator: None });
+            s.settings_open = true;
+            s.pf.page = crate::ui::settings::Page::Voice;
+            s.call.devices = Some(crate::audio::Devices {
+                mics: vec![crate::audio::Device { id: "m1".into(), label: "Microfone".into() }],
+                speakers: vec![crate::audio::Device { id: "s1".into(), label: "Alto-falantes".into() }],
+            });
+        });
+        rt.frame(0.0);
+        assert!(rt.find("set-page-voice").is_some(), "the sidebar has the audio page");
+        assert!(rt.find("set-mic-default").is_some(), "microphone choices are listed");
+        assert!(rt.find("set-mic-0").is_some());
+        assert!(rt.find("set-spk-default").is_some(), "speaker choices are listed");
+        assert!(rt.find("set-spk-0").is_some());
+        assert!(rt.find("set-in-vol").is_some(), "the voice page has the input volume");
+        assert!(rt.find("set-out-vol").is_some());
+        assert!(rt.find("set-denoise").is_some());
+        assert!(rt.find("set-audio-refresh").is_some());
+    }
+
+    #[test]
+    fn a_message_menu_offers_reply_and_the_author_s_edit_and_delete() {
+        let env = Env { system_dark: true, scale: 2.0 };
+        let mut rt = Runtime::new(State::default(), ui::view, (1100.0, 700.0), env);
+        rt.update(|s, _| {
+            let me = s.chat.me.clone().expect("demo user");
+            let m = Msg::local("mine".into(), me, "oi".into(), Delivery::Sent);
+            s.msg_menu = Some(crate::MsgMenu { msg: m, x: 200.0, y: 200.0 });
+        });
+        rt.frame(0.0);
+        assert!(rt.find("msg-menu").is_some());
+        assert!(rt.find("mm-reply").is_some() && rt.find("mm-copy").is_some());
+        assert!(rt.find("mm-edit").is_some() && rt.find("mm-delete").is_some(), "own messages can be changed");
+    }
+
+    #[test]
+    fn the_settings_appearance_page_offers_the_three_modes() {
+        let env = Env { system_dark: true, scale: 2.0 };
+        let mut rt = Runtime::new(State::default(), ui::view, (1100.0, 700.0), env);
+        rt.update(|s, _| {
+            s.chat.me = Some(fluxer_client::api::User { id: "1".into(), username: "eu".into(), global_name: None, avatar: None, discriminator: None });
+            s.settings_open = true;
+            s.pf.page = crate::ui::settings::Page::Appearance;
+        });
+        rt.frame(0.0);
+        assert!(rt.find("appearance-0").is_some() && rt.find("appearance-1").is_some() && rt.find("appearance-2").is_some());
+        assert!(rt.find("set-page-appearance").is_some());
+    }
+
+    #[test]
+    fn the_channel_search_has_a_box_and_the_matching_messages() {
+        let mut rt = rt();
+        rt.update(|s, _| {
+            s.search.open = true;
+            let me = s.chat.me.clone().expect("demo user");
+            s.search.results = vec![fluxer_client::api::Message::plain("found", "demo-0", "achado", me)];
+        });
+        rt.frame(0.0);
+        assert!(rt.find("search-input").is_some());
+        assert!(rt.find("search-go").is_some());
+        assert!(rt.find("sr-found").is_some());
+    }
+
+    #[test]
+    fn the_members_panel_has_a_name_filter() {
+        let mut rt = rt();
+        rt.update(|s, _| s.show_members = true);
+        rt.frame(0.0);
+        assert!(rt.find("member-search").is_some());
     }
 
     #[test]

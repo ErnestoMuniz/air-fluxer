@@ -3,7 +3,8 @@
 A native client for the Fluxer chat service, written in Rust on [Rune](https://github.com/anomalyco/rune),
 a GPU UI framework. Sign-in (with e-mail authorization and two-factor), servers and direct messages, live
 messages and history, replies, reactions, mentions, embeds, GIFs and video clips, uploads, the GIF, sticker and
-emoji pickers, profiles, and voice calls (LiveKit, PulseAudio, RNNoise noise suppression, screen shares).
+emoji pickers, profiles, and voice calls (LiveKit, CoreAudio on macOS and PulseAudio on Linux, RNNoise noise
+suppression, screen shares).
 
 ```
 app/                the application (`fluxer-app`)
@@ -21,8 +22,9 @@ mkdir -p ref && git clone https://github.com/anomalyco/rune ref/rune
 git -C ref/rune checkout ea6ddf8
 ```
 
-You also need a Rust toolchain (see `rust-toolchain.toml`), `clang` (the C++ glue of libwebrtc is built with it,
-see `.cargo/config.toml`) and the PulseAudio client library (`libpulse`).
+You also need a Rust toolchain (see `rust-toolchain.toml`) and `clang` (the C++ glue of libwebrtc is built with it,
+see `.cargo/config.toml`). On Linux, also the PulseAudio client library (`libpulse`). macOS uses the system's
+CoreAudio and needs no extra packages; the first voice call asks for microphone access.
 
 ```sh
 cargo run --release -p fluxer-app           # the app
@@ -30,18 +32,39 @@ FLUXER_DEMO=1 cargo run --release -p fluxer-app   # with made-up data, no accoun
 cargo test -p fluxer-app -p fluxer-client
 ```
 
+### macOS app
+
+```sh
+scripts/macos-bundle.sh                     # → target/release/Fluxer.app (this Mac's architecture)
+UNIVERSAL=1 scripts/macos-bundle.sh         # arm64 + x86_64 in one bundle
+open target/release/Fluxer.app
+```
+
+The bundle is ad-hoc signed by default. To stop macOS asking for the microphone and screen recording
+again after every rebuild, create the free self-signed identity once:
+
+```sh
+scripts/macos-dev-cert.sh                   # creates "Fluxer Dev" in the login keychain
+CODESIGN_IDENTITY="Fluxer Dev" scripts/macos-bundle.sh
+```
+
+An ad-hoc signature changes on every build (a different app to TCC); a stable certificate keeps the
+permission. The bundle carries the microphone and camera usage strings; anyone who downloads it opens it
+with **right-click → Open** (or `xattr -dr com.apple.quarantine Fluxer.app`) the first time. See
+`docs/APPLE.md`.
+
 ## Looking at it without a window
 
 `-- --snap out.png [--scene NAME]` draws one frame to a PNG. Scenes: `login`, `ip`, `code`, `call`, `call-watch`,
-`dm`, `scroll`, `settings`, `settings-guild`, `settings-picker`, `settings-longbio`, `extras`, `quiet`,
+`call-ping`, `dm`, `scroll`, `settings`, `settings-guild`, `settings-picker`, `settings-longbio`, `extras`, `quiet`,
 `farjump`, `mentions`.
 
 ## Where it keeps things
 
 | | |
 |---|---|
-| session, last place, preferences, audio settings | `~/.config/fluxer-rune/` (`FLUXER_RUX_CONFIG_DIR`) |
-| downloaded pictures (cut down to 256 MB at launch) | `~/.cache/fluxer-rune/media/` (`FLUXER_RUX_CACHE_DIR`) |
+| session, last place, preferences, audio settings | `~/Library/Application Support/fluxer-rune/` on macOS, `~/.config/fluxer-rune/` on Linux (`FLUXER_RUX_CONFIG_DIR`) |
+| downloaded pictures (cut down to 256 MB at launch) | `~/Library/Caches/fluxer-rune/media/` on macOS, `~/.cache/fluxer-rune/media/` on Linux (`FLUXER_RUX_CACHE_DIR`) |
 
 ## Memory and CPU
 

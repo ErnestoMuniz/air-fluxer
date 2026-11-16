@@ -42,11 +42,19 @@ pub struct Call {
     /// Users speaking right now.
     pub speaking: HashSet<String>,
     pub error: Option<String>,
+    /// Round-trip time to the voice room in milliseconds; None until WebRTC measures it.
+    pub ping: Option<u32>,
+    /// The pointer is on the signal icon: the dock explains the ping.
+    pub ping_tip: bool,
+    /// This account is publishing its screen.
+    pub sharing: bool,
     /// Microphone, speakers, volumes and noise suppression; saved on every change.
     pub settings: Settings,
     pub shared: SharedAudio,
     /// The audio menu (right click on the mute or deafen button, or the gear).
     pub menu_open: bool,
+    /// The settings dialog's voice page is open: the microphone meter runs there too.
+    pub settings_audio: bool,
     /// Key of the button the menu opens above (the one right-clicked).
     pub menu_anchor: String,
     pub fold: Fold,
@@ -96,10 +104,23 @@ impl Call {
         self.menu_open = !self.menu_open;
         if self.menu_anchor.is_empty() { self.menu_anchor = "mic-toggle".into() }
         self.fold = Fold::None;
-        self.engine_send(Cmd::Meter(self.menu_open));
+        self.engine_send(Cmd::Meter(self.menu_open || self.settings_audio));
         if !self.menu_open { return }
+        self.refresh_devices();
+    }
+
+    /// The settings voice page wants the microphone level (it opens the mic for as long as it is on).
+    pub fn meter(&mut self, on: bool) {
+        if self.settings_audio == on { return }
+        self.settings_audio = on;
+        self.engine_send(Cmd::Meter(self.menu_open || on));
+    }
+
+    /// Lists the audio devices (the menu and the settings page do it: they come and go).
+    pub fn refresh_devices(&mut self) {
         let (tx, rx) = std::sync::mpsc::channel();
         self.devices_rx = Some(rx);
+        self.devices = None;
         let wake = self.wake.clone();
         std::thread::spawn(move || { let _ = tx.send(audio::list_devices()); if let Some(w) = wake { w() } });
     }
@@ -175,7 +196,7 @@ impl Call {
         })) }
     }
 
-    pub fn join(&mut self, gw: Option<&Handle>, guild: &str, channel: &str) {
+    pub fn join(&mut self, gw: Option<&Handle>, guild: Option<&str>, channel: &str) {
         if self.channel_id.as_deref() == Some(channel) { return }
         let Some(gw) = gw else { return };
         // Moving between channels keeps the same connection; a fresh join starts without one.
@@ -183,7 +204,7 @@ impl Call {
         // Streams belong to a channel: moving to another one watches none.
         self.watching.clear();
         self.engine_send(Cmd::Watch(Vec::new()));
-        self.guild_id = Some(guild.into());
+        self.guild_id = guild.map(String::from);
         self.channel_id = Some(channel.into());
         self.error = None;
         if gw.send(self.frame(Some(channel))) { self.phase = Phase::Connecting } else { self.reset() }
@@ -205,6 +226,9 @@ impl Call {
         self.channel_id = None;
         self.connection_id = None;
         self.speaking.clear();
+        self.ping = None;
+        self.ping_tip = false;
+        self.sharing = false;
         self.view = false;
         self.grid = false;
         self.viewer_tip = None;
@@ -254,6 +278,18 @@ impl Call {
         self.deafened = !self.deafened;
         self.sound(if self.deafened { Sound::Deafen } else { Sound::Undeafen });
         self.push_flags(gw);
+    }
+
+    /// Starts or stops publishing this Mac's screen to the call.
+    pub fn toggle_screen_share(&mut self) {
+        self.error = None;
+        self.engine_send(Cmd::ShareScreen(!self.sharing, self.settings.share_height));
+    }
+
+    /// How tall a shared frame may be (720 or 1080), saved with the audio settings.
+    pub fn set_share_height(&mut self, height: u32) {
+        self.settings.share_height = height.clamp(360, 2160);
+        audio::save(&self.settings);
     }
 
     /// `VOICE_SERVER_UPDATE`: where to connect.
@@ -307,6 +343,9 @@ impl Call {
                 Ev::Disconnected => if self.active() { self.leave(gw) },
                 Ev::Failed(why) => { self.error = Some(why); self.leave(gw) }
                 Ev::Speaking(users) => self.speaking = users.into_iter().collect(),
+                Ev::Ping(ms) => self.ping = Some(ms),
+                Ev::Sharing(on) => { self.sharing = on; if !on { self.view = self.view && on } }
+                Ev::Notice(why) => self.error = Some(why),
                 Ev::Video => {}
             }
         }
