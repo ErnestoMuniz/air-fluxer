@@ -51,6 +51,8 @@ pub struct Call {
     pub shared: SharedAudio,
     /// The audio menu (right click on the mute or deafen button, or the gear).
     pub menu_open: bool,
+    /// The settings dialog's voice page is open: the microphone meter runs there too.
+    pub settings_audio: bool,
     /// Key of the button the menu opens above (the one right-clicked).
     pub menu_anchor: String,
     pub fold: Fold,
@@ -100,9 +102,16 @@ impl Call {
         self.menu_open = !self.menu_open;
         if self.menu_anchor.is_empty() { self.menu_anchor = "mic-toggle".into() }
         self.fold = Fold::None;
-        self.engine_send(Cmd::Meter(self.menu_open));
+        self.engine_send(Cmd::Meter(self.menu_open || self.settings_audio));
         if !self.menu_open { return }
         self.refresh_devices();
+    }
+
+    /// The settings voice page wants the microphone level (it opens the mic for as long as it is on).
+    pub fn meter(&mut self, on: bool) {
+        if self.settings_audio == on { return }
+        self.settings_audio = on;
+        self.engine_send(Cmd::Meter(self.menu_open || on));
     }
 
     /// Lists the audio devices (the menu and the settings page do it: they come and go).

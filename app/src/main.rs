@@ -42,6 +42,18 @@ pub struct Ctx { pub user: User, pub x: f32, pub y: f32 }
 /// where the pointer was, for a mention with no element of its own to anchor beside.
 pub struct Prof { pub user: User, pub anchor: String, pub at: Option<(f32, f32)> }
 
+/// The menu of one message (right click): the message, and where the pointer was.
+pub struct MsgMenu { pub msg: Msg, pub x: f32, pub y: f32 }
+
+/// What the message box is doing besides writing a new message: answering one, or rewriting one.
+#[derive(Clone, Debug)]
+pub struct Draft {
+    /// The message being answered (`Quoted` is what the reply bar and the server payload use).
+    pub reply: Option<Quoted>,
+    /// The id of this account's message being edited; the box holds its text.
+    pub editing: Option<String>,
+}
+
 pub struct State {
     pub rail_hover: Option<String>,
     pub settings_open: bool,
@@ -59,12 +71,20 @@ pub struct State {
     pub highlighted: Option<(String, std::time::Instant)>,
     /// Where the pointer last was, tracked live so a mention can open its card beside it.
     pub pointer: rune::Live<[f32; 2]>,
+    /// The members panel's filter (names and nicknames).
+    pub member_search: TextEdit,
     /// The video attachment playing inline, if any (attachment id, player).
     pub video: Option<(String, rune::Player)>,
     pub customize_open: bool,
     /// A short note about something that failed (a send), shown above the message box.
     pub notice: Option<String>,
     pub ctx: Option<Ctx>,
+    /// The message whose right-click menu is open, and where.
+    pub msg_menu: Option<MsgMenu>,
+    /// Answering a message, or rewriting one.
+    pub draft_mode: Draft,
+    /// The (channel, message) already acknowledged to the server, so one ack goes per message.
+    acked: Option<(String, String)>,
     pub profile: Option<Prof>,
     /// Profiles fetched so far, by `net::profile_key`.
     pub profiles: std::collections::HashMap<String, fluxer_client::api::Profile>,
@@ -138,8 +158,8 @@ impl Default for State {
     fn default() -> Self {
         State {
             rail_hover: None, settings_open: false, pf: Default::default(), prof: [TextEdit::new(""), TextEdit::new(""), TextEdit::new(""), TextEdit::new("")],
-            picker: Default::default(), prefs: prefs::load(), plus_open: false, msg_hover: None, react_picker: None, highlighted: None, pointer: rune::Live::new([0.0, 0.0]), video: None, customize_open: false, notice: None,
-            ctx: None, profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
+            picker: Default::default(), prefs: prefs::load(), plus_open: false, msg_hover: None, react_picker: None, highlighted: None, pointer: rune::Live::new([0.0, 0.0]), member_search: TextEdit::new(""), video: None, customize_open: false, notice: None,
+            ctx: None, msg_menu: None, draft_mode: Draft { reply: None, editing: None }, acked: None, profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
             intro: 0.0, intro_t0: None, chat: demo_chat(), net: net::Net::default(), draft: TextEdit::new(""), gateway: None, subscribed: None, synced_guilds: Default::default(), show_members: true, call: Default::default(), focused: true, visible: 0..0, typing_wake: false, thumb: Default::default(),
         }
     }
@@ -337,6 +357,13 @@ fn on_net(s: &mut State, d: net::Done) -> bool {
         net::Done::Reacted(Err(e)) => { s.notice = Some(format!("Não foi possível reagir: {e}")); true }
         net::Done::Reacted(Ok(())) => false,
         net::Done::ProfileSaved { guild, res } => { ui::settings::on_saved(s, guild, res); true }
+        net::Done::Edited(Ok(m)) => s.chat.on_message_updated(m),
+        net::Done::Edited(Err(e)) => { s.notice = Some(format!("Não foi possível editar: {e}")); true }
+        net::Done::Deleted { channel, id, res: Ok(()) } => s.chat.on_message_deleted(&channel, &id),
+        net::Done::Deleted { res: Err(e), .. } => { s.notice = Some(format!("Não foi possível apagar: {e}")); true }
+        net::Done::Acked(_) => false,
+        net::Done::AvatarSaved(res) => { ui::settings::on_avatar(s, res); true }
+        net::Done::TimezoneSaved(res) => { ui::settings::on_timezone(s, res); true }
         net::Done::Profile { key, res: Ok(p) } => {
             if let (Some(media), Some(h)) = (s.chat.media.clone(), p.banner.as_deref()) {
                 if let Some(uid) = key.split('@').next() { s.net.want_image_first(&fluxer_client::api::banner_still_url(&media, uid, h, 600)) }
@@ -361,6 +388,16 @@ fn reconcile(s: &mut State) {
             log.loading = true;
             s.net.history(&cid, None);
         }
+    }
+    // Reading is acknowledging: the newest real message of the open channel, once, while the
+    // window has the focus. The server keeps the unread badges and the "new messages" line.
+    if s.focused && s.net.has_api() && let Some(cid) = s.chat.channel_id().map(String::from)
+        && let Some(mid) = s.chat.logs.get(&cid).and_then(|l| l.msgs.iter().rev()
+            .find(|m| m.delivery == Delivery::Sent && !m.id.starts_with("local-")).map(|m| m.id.clone()))
+        && s.acked.as_ref() != Some(&(cid.clone(), mid.clone()))
+    {
+        s.net.ack(&cid, &mid);
+        s.acked = Some((cid, mid));
     }
     let wanted = wanted_all(s);
     for url in &wanted { s.net.want_image(url) }
@@ -507,6 +544,8 @@ pub fn open_guild(s: &mut State, g: Option<usize>) {
 pub fn open_channel(s: &mut State, i: usize) {
     s.call.view = false;
     s.visible = 0..0;
+    s.draft_mode.reply = None;
+    if s.draft_mode.editing.take().is_some() { s.draft.clear() }
     s.chat.open_channel(i);
     reconcile(s);
     remember(s);
@@ -564,10 +603,44 @@ pub fn retry(s: &mut State, local: &str) {
 pub fn send(s: &mut State) {
     let body = s.draft.text.trim().to_string();
     if body.is_empty() { return }
+    let Some(cid) = s.chat.channel_id().map(String::from) else { return };
+    if let Some(id) = s.draft_mode.editing.clone() {
+        s.notice = None;
+        if s.net.has_api() { s.net.edit_message(&cid, &id, &body) }
+        else if let Some(m) = s.chat.logs.get_mut(&cid).and_then(|l| l.msgs.iter_mut().find(|m| m.id == id)) { m.body = body; m.edited = true }
+        s.draft_mode.editing = None;
+        s.draft.clear();
+        return;
+    }
+    if let Some(reply) = s.draft_mode.reply.take() {
+        send_reply_body(s, body, reply);
+        s.draft.clear();
+        return;
+    }
     send_body(s, body);
     // Cleared in place, not replaced: a fresh TextEdit would drop the caret and the next message
     // would need another click on the box.
     s.draft.clear();
+}
+
+/// Sends `body` answering `reply`: shown at once with its quote, confirmed by the server.
+fn send_reply_body(s: &mut State, body: String, reply: Quoted) {
+    let Some(cid) = s.chat.channel_id().map(String::from) else { return };
+    s.notice = None;
+    if s.net.has_api() {
+        if let Some(local) = s.chat.push_pending(&cid, body.clone()) {
+            if let Some(m) = s.chat.logs.get_mut(&cid).and_then(|l| l.msgs.iter_mut().find(|m| m.id == local)) { m.reply = Some(reply.clone()) }
+            match reply.id.as_deref() {
+                Some(id) => s.net.send_reply(&cid, &local, &body, id),
+                None => s.net.send(&cid, &local, &body),
+            }
+        }
+    } else if let Some(local) = s.chat.push_pending(&cid, body) {
+        if let Some(m) = s.chat.logs.get_mut(&cid).and_then(|l| l.msgs.iter_mut().find(|m| m.id == local)) {
+            m.reply = Some(reply);
+            m.delivery = Delivery::Sent;
+        }
+    }
 }
 
 /// Sends `body` to the open channel: shown at once as pending, confirmed by the REST reply or the
@@ -575,6 +648,8 @@ pub fn send(s: &mut State) {
 pub fn send_body(s: &mut State, body: String) {
     let Some(cid) = s.chat.channel_id().map(String::from) else { return };
     s.notice = None;
+    s.draft_mode.reply = None;
+    s.draft_mode.editing = None;
     if s.net.has_api() {
         if let Some(local) = s.chat.push_pending(&cid, body.clone()) { s.net.send(&cid, &local, &body) }
     } else if let Some(local) = s.chat.push_pending(&cid, body) {
@@ -692,6 +767,17 @@ fn main() {
                 });
                 s.call.settings.mic = Some("coreaudio:AppleUSBAudioEngine:Kingston:HyperX".into());
                 s.pf.page = crate::ui::settings::Page::Voice;
+            }),
+            // The right-click menu of a message (see `--scene msg-menu`).
+            ("msg-menu", |s| {
+                let me = s.chat.me.clone().expect("demo user");
+                let m = Msg::local("mine".into(), me, "olha esse menu".into(), Delivery::Sent);
+                s.msg_menu = Some(MsgMenu { msg: m, x: 640.0, y: 360.0 });
+            }),
+            // The message box answering an earlier message (see `--scene reply-bar`).
+            ("reply-bar", |s| {
+                let me = s.chat.me.clone().expect("demo user");
+                s.draft_mode.reply = Some(Quoted { id: Some("9998".into()), author: me, content: "mensagem original".into(), has_attachments: false });
             }),
             // Embed + video + role icon proofs (see `--scene extras`).
             ("extras", |s| {
@@ -894,6 +980,26 @@ mod tests {
     }
 
     #[test]
+    fn a_reply_carries_its_quote_and_an_edit_rewrites_in_place() {
+        let mut s = State::default();
+        let quoted = fluxer_client::api::Quoted { id: Some("5".into()), author: s.chat.me.clone().unwrap(), content: "original".into(), has_attachments: false };
+        s.draft = TextEdit::new("respondendo");
+        s.draft_mode.reply = Some(quoted);
+        send(&mut s);
+        let last = s.chat.log().unwrap().msgs.last().unwrap().clone();
+        assert_eq!(last.body, "respondendo");
+        assert_eq!(last.reply.and_then(|r| r.id).as_deref(), Some("5"), "the reply keeps what it answers");
+        assert!(s.draft_mode.reply.is_none());
+
+        let id = last.id;
+        s.draft = TextEdit::new("editada");
+        s.draft_mode.editing = Some(id.clone());
+        send(&mut s);
+        assert_eq!(s.chat.log().unwrap().msgs.iter().find(|m| m.id == id).unwrap().body, "editada");
+        assert!(s.draft_mode.editing.is_none());
+    }
+
+    #[test]
     fn ready_then_live_messages_fill_the_chat_and_the_view() {
         let mut rt = rt();
         rt.update(|s, _| {
@@ -1050,7 +1156,33 @@ mod tests {
         assert!(rt.find("set-mic-0").is_some());
         assert!(rt.find("set-spk-default").is_some(), "speaker choices are listed");
         assert!(rt.find("set-spk-0").is_some());
+        assert!(rt.find("set-in-vol").is_some(), "the voice page has the input volume");
+        assert!(rt.find("set-out-vol").is_some());
+        assert!(rt.find("set-denoise").is_some());
         assert!(rt.find("set-audio-refresh").is_some());
+    }
+
+    #[test]
+    fn a_message_menu_offers_reply_and_the_author_s_edit_and_delete() {
+        let env = Env { system_dark: true, scale: 2.0 };
+        let mut rt = Runtime::new(State::default(), ui::view, (1100.0, 700.0), env);
+        rt.update(|s, _| {
+            let me = s.chat.me.clone().expect("demo user");
+            let m = Msg::local("mine".into(), me, "oi".into(), Delivery::Sent);
+            s.msg_menu = Some(crate::MsgMenu { msg: m, x: 200.0, y: 200.0 });
+        });
+        rt.frame(0.0);
+        assert!(rt.find("msg-menu").is_some());
+        assert!(rt.find("mm-reply").is_some() && rt.find("mm-copy").is_some());
+        assert!(rt.find("mm-edit").is_some() && rt.find("mm-delete").is_some(), "own messages can be changed");
+    }
+
+    #[test]
+    fn the_members_panel_has_a_name_filter() {
+        let mut rt = rt();
+        rt.update(|s, _| s.show_members = true);
+        rt.frame(0.0);
+        assert!(rt.find("member-search").is_some());
     }
 
     #[test]

@@ -92,6 +92,15 @@ pub enum Done {
     Endpoints(Result<Endpoints, String>),
     Reacted(Result<(), String>),
     ProfileSaved { guild: Option<String>, res: Result<serde_json::Value, String> },
+    /// A message was edited or deleted; the gateway echo will confirm it too.
+    Edited(Result<Message, String>),
+    Deleted { channel: String, id: String, res: Result<(), String> },
+    /// A read-state acknowledgement (failures are quiet: it is retried on the next message).
+    Acked(Result<(), String>),
+    /// The account's avatar (None when it was removed).
+    AvatarSaved(Result<serde_json::Value, String>),
+    /// The account's profile time zone.
+    TimezoneSaved(Result<serde_json::Value, String>),
     Profile { key: String, res: Result<api::Profile, String> },
     /// A message sent without a local copy (a sticker): the gateway brings it back; only failures matter.
     Posted(Result<(), String>),
@@ -196,6 +205,65 @@ impl Net {
         let (c, st) = (channel.to_string(), sticker.to_string());
         let nonce = crate::clock::now_ms().to_string();
         self.job(move || api.send_sticker(&c, &st, &nonce).map(|_| ()).map_err(|e| e.message), Done::Posted);
+    }
+
+    /// Sends `content` as a reply to `reply_to`; `local` is the optimistic message id.
+    pub fn send_reply(&self, channel: &str, local: &str, content: &str, reply_to: &str) {
+        let Some(api) = self.api.clone() else { return };
+        let (channel, local, content, reply_to) = (channel.to_string(), local.to_string(), content.to_string(), reply_to.to_string());
+        let (c, n, body, r) = (channel.clone(), local.clone(), content, reply_to);
+        self.job(move || api.send_reply(&c, &body, &n, &r).map_err(|e| e.message),
+            move |res| Done::Sent { channel, local, res });
+    }
+
+    /// Rewrites one of this account's messages.
+    pub fn edit_message(&self, channel: &str, id: &str, content: &str) {
+        let Some(api) = self.api.clone() else { return };
+        let (c, m, body) = (channel.to_string(), id.to_string(), content.to_string());
+        self.job(move || api.edit_message(&c, &m, &body).map_err(|e| e.message), Done::Edited);
+    }
+
+    /// Deletes one of this account's messages.
+    pub fn delete_message(&self, channel: &str, id: &str) {
+        let Some(api) = self.api.clone() else { return };
+        let (c, m) = (channel.to_string(), id.to_string());
+        let (channel, mid) = (c.clone(), m.clone());
+        self.job(move || api.delete_message(&c, &m).map_err(|e| e.message), move |res| Done::Deleted { channel, id: mid, res });
+    }
+
+    /// Marks a channel read up to `message_id`.
+    pub fn ack(&self, channel: &str, message_id: &str) {
+        let Some(api) = self.api.clone() else { return };
+        let (c, m) = (channel.to_string(), message_id.to_string());
+        self.job(move || api.ack(&c, &m).map_err(|e| e.message), Done::Acked);
+    }
+
+    /// Sets (a base64 PNG) or removes the account's avatar.
+    pub fn set_avatar(&self, avatar: Option<String>) {
+        let Some(api) = self.api.clone() else { return };
+        self.job(move || api.patch_profile(None, &serde_json::json!({ "avatar": avatar })).map_err(|e| e.message), Done::AvatarSaved);
+    }
+
+    /// Saves the account's IANA time zone for the profile's local time.
+    pub fn save_timezone(&self, timezone: String) {
+        let Some(api) = self.api.clone() else { return };
+        self.job(move || api.patch_profile(None, &serde_json::json!({ "timezone": timezone })).map_err(|e| e.message), Done::TimezoneSaved);
+    }
+
+    /// Reads, squares and encodes a picture for the avatar, then saves it (blocking, off-thread).
+    pub fn upload_avatar(&self, path: std::path::PathBuf) {
+        let Some(api) = self.api.clone() else { return };
+        self.job(move || {
+            let data = std::fs::read(&path).map_err(|e| format!("não foi possível ler o arquivo: {e}"))?;
+            let image = image::load_from_memory(&data).map_err(|e| format!("imagem inválida: {e}"))?;
+            let image = image.resize_to_fill(512, 512, image::imageops::FilterType::Lanczos3);
+            let mut png = Vec::new();
+            image.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                .map_err(|e| format!("não foi possível converter a imagem: {e}"))?;
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+            api.patch_profile(None, &serde_json::json!({ "avatar": b64 })).map_err(|e| e.message)
+        }, Done::AvatarSaved);
     }
 
     /// Saves the profile form: the account's own (`guild` None) or the one in a server.

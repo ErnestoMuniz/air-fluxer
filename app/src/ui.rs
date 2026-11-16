@@ -376,6 +376,7 @@ const DOCK_CALL_H: f32 = 108.0;
 
 static WAVEFORM: rune::Icon = rune::Icon { name: "app-waveform", view: 24.0, body: r#"<path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/>"# };
 static SIGNAL: rune::Icon = rune::Icon { name: "app-signal", view: 24.0, body: r#"<path d="M4 4a16 16 0 0 1 16 16M4 10a10 10 0 0 1 10 10M4 16a4 4 0 0 1 4 4" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/>"# };
+static SEARCH_ICON: rune::Icon = rune::Icon { name: "app-search", view: 24.0, body: r#"<circle cx="10.5" cy="10.5" r="6.5" stroke="currentColor" stroke-width="2.2" fill="none"/><path d="M15.5 15.5L20 20" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>"# };
 static CHEVRON: rune::Icon = rune::Icon { name: "app-chevron", view: 24.0, body: r#"<path d="M9 5l7 7-7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"# };
 static CHECK: rune::Icon = rune::Icon { name: "app-check", view: 24.0, body: r#"<path d="M5 12.5l4.5 4.5L19 7.5" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"# };
 
@@ -592,6 +593,58 @@ fn user_menu(s: &State) -> El {
 /// A point with no size where the right click landed; the menu opens at its lower right.
 fn ctx_point(s: &State) -> El {
     match &s.ctx { Some(c) => el().key("ctx-point").absolute(c.x, c.y).size(0.0, 0.0), None => el().size(0.0, 0.0) }
+}
+
+fn msg_point(s: &State) -> El {
+    match &s.msg_menu { Some(m) => el().key("msg-point").absolute(m.x, m.y).size(0.0, 0.0), None => el().size(0.0, 0.0) }
+}
+
+fn msg_menu_scrim(s: &State) -> El {
+    if s.msg_menu.is_none() { return el().size(0.0, 0.0) }
+    el().key("msg-scrim").pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+        .on_press(|s: &mut State| s.msg_menu = None)
+        .on_secondary_press(|s: &mut State, _, _| s.msg_menu = None)
+}
+
+/// The right-click menu of a message: answer, copy, and (for this account's own) edit or delete.
+fn message_menu(s: &State) -> El {
+    let (p, t) = (pal(), tok::theme(true));
+    let Some(open) = &s.msg_menu else { return el().size(0.0, 0.0) };
+    let m = open.msg.clone();
+    let mine = s.chat.me.as_ref().is_some_and(|me| me.id == m.author.id);
+    let item = |key: &str, label: &str| row().key(key.to_string()).h(32.0).px(12.0).center_y().radius(radius::SM).hover(p.hover)
+        .child(text(label.to_string()).font(type_::BODY).color(t.text).grow(1.0))
+        .cursor(rune::Cursor::Pointer);
+    let quote = { let m = m.clone(); move |s: &mut State, tx: &mut rune::Tx| {
+        s.draft_mode.reply = Some(Quoted { id: Some(m.id.clone()), author: m.author.clone(), content: m.body.clone(), has_attachments: !m.attachments.is_empty() });
+        s.draft_mode.editing = None;
+        s.msg_menu = None;
+        tx.focus("composer", false);
+    } };
+    let body = { let b = m.body.clone(); move |s: &mut State, tx: &mut rune::Tx| { tx.copy(b.clone()); s.msg_menu = None } };
+    let edit = { let m = m.clone(); move |s: &mut State, tx: &mut rune::Tx| {
+        s.draft_mode.editing = Some(m.id.clone());
+        s.draft_mode.reply = None;
+        s.draft.replace_text(m.body.clone());
+        s.msg_menu = None;
+        tx.focus("composer", false);
+    } };
+    let (cid, id) = (s.chat.channel_id().map(String::from).unwrap_or_default(), m.id.clone());
+    let delete = move |s: &mut State| {
+        if s.net.has_api() { s.net.delete_message(&cid, &id) } else { s.chat.on_message_deleted(&cid, &id); }
+        s.msg_menu = None;
+    };
+    let mut menu = col().px(6.0).py(6.0).gap(1.0)
+        .child(item("mm-reply", "Reply").on_press_tx(quote))
+        .child(item("mm-copy", "Copy text").on_press_tx(body));
+    if mine {
+        menu = menu.child(item("mm-edit", "Edit message").on_press_tx(edit))
+            .child(item("mm-delete", "Delete message").on_press(delete));
+    }
+    col().key("msg-menu").w(200.0).radius(10.0).fill(oklch(0.22, 0.008, 265.0)).border(1.0, p.line)
+        .shadow(6.0, 24.0, t.shadow).on_press(|_: &mut State| {})
+        .child(menu)
+        .anchored("msg-point", rune::Side::Bottom, rune::Align::Start, 2.0)
 }
 
 /// "Nov 3, 2026" for a moment in Unix milliseconds.
@@ -1066,7 +1119,10 @@ fn message(s: &State, m: &Msg, prev: Option<&Msg>) -> El {
     let mut line = row().w_full().px(16.0).py(if follow { 1.0 } else { 7.5 }).gap(14.0).hover(p.hover).child(lead).child(body)
         .on_hover_change(move |s: &mut State, inside, _| {
             if inside { s.msg_hover = Some(id.clone()) } else if s.msg_hover.as_deref() == Some(id.as_str()) { s.msg_hover = None }
-        });
+        })
+        .on_secondary_press({ let msg = m.clone(); move |s: &mut State, p, _| {
+            s.msg_menu = Some(crate::MsgMenu { msg: msg.clone(), x: p.x, y: p.y })
+        } });
     if flashed {
         line = line.fill(oklcha(0.62, 0.20, 255.0, 0.12))
             .child(el().pin(Some(0.0), Some(0.0), None, Some(0.0)).w(4.0).fill(oklch(0.62, 0.20, 255.0)));
@@ -1121,7 +1177,8 @@ fn message_list(s: &State) -> El {
     }
     // The message box floats over the list, so a spacer under the rows keeps its height clear at
     // the bottom and the last message still scrolls up above it.
-    let composer_room = if typing_notice(s).is_some() { 94.0 } else { 72.0 };
+    let draft_room = if s.draft_mode.reply.is_some() || s.draft_mode.editing.is_some() { 30.0 } else { 0.0 };
+    let composer_room = draft_room + if typing_notice(s).is_some() { 94.0 } else { 72.0 };
     let content = col().w_full().child(rows).child(el().w_full().h(composer_room));
     // A fresh scroll area per channel, so each one opens at its newest message.
     // The thumb floats over the viewport's right edge, in the margin beside the message box.
@@ -1160,9 +1217,15 @@ fn members_panel(s: &State) -> El {
     let (p, t) = (pal(), tok::theme(true));
     let guild = s.chat.nav.guild.and_then(|g| s.chat.guilds.get(g));
     let owner = guild.and_then(|g| g.owner_id.as_deref());
+    let search = row().h(32.0).mx(12.0).mt(10.0).px(10.0).gap(8.0).center_y().radius(radius::SM)
+        .fill(p.input).border(1.0, p.line)
+        .child(rune::icon(&SEARCH_ICON, 14.0).color(t.text_secondary))
+        .child(text_input(&s.member_search, type_::BODY).key("member-search").placeholder("Search members", t.text_secondary)
+            .on_edit(|s: &mut State| &mut s.member_search).grow(1.0).min_w(0.0));
+    let q = s.member_search.text.trim().to_lowercase();
     let mut list = col().px(12.0).py(12.0).gap(2.0);
     match guild.and_then(|g| s.chat.roster.lists.get(&g.id)) {
-        Some(rows) if !rows.is_empty() => for r in rows {
+        Some(rows) if !rows.is_empty() && q.is_empty() => for r in rows {
             list = list.child(match r {
                 Row::Group { id, count } => row().h(28.0).px(8.0).pt(8.0).center_y()
                     .child(text(format!("{}—{count}", s.chat.roster.group_label(id))).font(rune::tok::TextStyle::new(13.0, 600.0)).color(t.text_secondary)),
@@ -1170,9 +1233,20 @@ fn members_panel(s: &State) -> El {
                     s.chat.roster.status.get(&user.id).map_or(status.as_str(), String::as_str), owner == Some(user.id.as_str())),
             });
         },
+        Some(rows) if !rows.is_empty() => for r in rows {
+            // A search is a flat list of whoever matches the name they are shown under.
+            let Row::Member { user, nick, status } = r else { continue };
+            let name = nick.as_deref().unwrap_or_else(|| user.display()).to_lowercase();
+            if !name.contains(&q) && !user.username.to_lowercase().contains(&q) { continue }
+            list = list.child(member_row(s, user, nick.as_deref(),
+                s.chat.roster.status.get(&user.id).map_or(status.as_str(), String::as_str), owner == Some(user.id.as_str())));
+        },
+        _ if !q.is_empty() => list = list.child(row().h(40.0).px(10.0).center_y()
+            .child(text("Ninguém com esse nome").font(type_::LABEL).color(t.text_secondary))),
         _ => list = list.child(row().h(40.0).px(10.0).center_y().child(text("Carregando membros…").font(type_::LABEL).color(t.text_secondary))),
     }
-    col().w(members_w(s)).h_full().fill(p.side).child(list.scroll(ScrollSpec { stick_bottom: false }).grow(1.0).min_h(0.0))
+    col().w(members_w(s)).h_full().fill(p.side).child(search)
+        .child(list.scroll(ScrollSpec { stick_bottom: false }).grow(1.0).min_h(0.0))
         .child(resize_handle("resize-members", false, members_w(s), |s, w| s.prefs.members_w = w.clamp(200.0, 420.0) as u32).pin(Some(0.0), Some(0.0), None, Some(0.0)))
 }
 
@@ -1266,7 +1340,7 @@ fn main_view(s: &State, stage: Option<[f32; 2]>) -> El {
     // A mention's card anchors beside this marker at the point the pointer was on.
     let mention_anchor = s.profile.as_ref().and_then(|p| p.at)
         .map_or_else(|| el().size(0.0, 0.0), |(x, y)| el().key("mention-anchor").absolute(x, y).size(1.0, 1.0));
-    all.child(menu_scrim(s)).child(user_menu_scrim(s)).child(profile_scrim(s)).child(dock(s)).child(audio_menu(s)).child(ctx_point(s)).child(user_menu(s)).child(mention_anchor).child(profile_card(s)).child(ping_tip(s)).child(settings::dialog(s))
+    all.child(menu_scrim(s)).child(user_menu_scrim(s)).child(msg_menu_scrim(s)).child(profile_scrim(s)).child(dock(s)).child(audio_menu(s)).child(ctx_point(s)).child(msg_point(s)).child(user_menu(s)).child(message_menu(s)).child(mention_anchor).child(profile_card(s)).child(ping_tip(s)).child(settings::dialog(s))
         .on_pointer_move_local(|s: &mut State, p, tx| { s.pointer.set([p.window_x, p.window_y]); tx.live_only() })
         .on_window_focus(|s: &mut State, focused, _| set_focus(s, focused))
 }

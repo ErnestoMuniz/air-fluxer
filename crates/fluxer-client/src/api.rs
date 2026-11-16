@@ -409,6 +409,50 @@ impl Api {
         self.post_message(channel_id, json!({ "sticker_ids": [sticker_id], "nonce": nonce }))
     }
 
+    /// A message that answers `reply_to` (the composer's reply bar).
+    pub fn send_reply(&self, channel_id: &str, content: &str, nonce: &str, reply_to: &str) -> Result<Message, Error> {
+        self.post_message(channel_id, json!({
+            "content": content, "nonce": nonce,
+            "message_reference": { "message_id": reply_to, "channel_id": channel_id, "type": 0 },
+            "allowed_mentions": { "replied_user": true },
+        }))
+    }
+
+    /// Rewrites one of this account's messages.
+    pub fn edit_message(&self, channel_id: &str, message_id: &str, content: &str) -> Result<Message, Error> {
+        let url = format!("{}/channels/{channel_id}/messages/{message_id}", self.ep.api_client);
+        let mut r = agent().patch(&url).header("Accept", "application/json").header("Authorization", &self.token);
+        if let Some(o) = &self.ep.origin { r = r.header("Origin", o.as_str()) }
+        let mut res = r.send_json(json!({ "content": content })).map_err(|e| Error::local(format!("falha de rede: {e}")))?;
+        let status = res.status().as_u16();
+        let body = res.body_mut().read_json().unwrap_or(Value::Null);
+        if !(200..300).contains(&status) { return Err(failure(&crate::rest::Reply { status, body })) }
+        Message::from_json(&body).ok_or_else(|| Error::local("resposta de edição inesperada"))
+    }
+
+    /// Deletes one of this account's messages.
+    pub fn delete_message(&self, channel_id: &str, message_id: &str) -> Result<(), Error> {
+        let url = format!("{}/channels/{channel_id}/messages/{message_id}", self.ep.api_client);
+        let mut r = agent().delete(&url).header("Accept", "application/json").header("Authorization", &self.token);
+        if let Some(o) = &self.ep.origin { r = r.header("Origin", o.as_str()) }
+        let mut res = r.call().map_err(|e| Error::local(format!("falha de rede: {e}")))?;
+        let status = res.status().as_u16();
+        let body = res.body_mut().read_json().unwrap_or(Value::Null);
+        if (200..300).contains(&status) { Ok(()) } else { Err(failure(&crate::rest::Reply { status, body })) }
+    }
+
+    /// Marks a channel read up to `message_id`.
+    pub fn ack(&self, channel_id: &str, message_id: &str) -> Result<(), Error> {
+        let url = format!("{}/read-states/ack", self.ep.api_client);
+        let mut r = agent().post(&url).header("Accept", "application/json").header("Authorization", &self.token);
+        if let Some(o) = &self.ep.origin { r = r.header("Origin", o.as_str()) }
+        let body = json!({ "read_states": [{ "channel_id": channel_id, "message_id": message_id }] });
+        let mut res = r.send_json(&body).map_err(|e| Error::local(format!("falha de rede: {e}")))?;
+        let status = res.status().as_u16();
+        let body = res.body_mut().read_json().unwrap_or(Value::Null);
+        if (200..300).contains(&status) { Ok(()) } else { Err(failure(&crate::rest::Reply { status, body })) }
+    }
+
     /// A message with one file attached: `multipart/form-data` with the message as `payload_json`
     /// and the file as `files[0]`, as the web client does when it does not upload ahead of time.
     pub fn send_file(&self, channel_id: &str, content: &str, filename: &str, content_type: &str, data: &[u8], nonce: &str) -> Result<Message, Error> {

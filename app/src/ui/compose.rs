@@ -14,6 +14,9 @@ static SEARCH: rune::Icon = rune::Icon { name: "app-search", view: 24.0, body: r
 static PAPERCLIP: rune::Icon = rune::Icon { name: "app-paperclip", view: 24.0, body: r#"<path d="M19 11.5l-7 7a4.5 4.5 0 0 1-6.4-6.4l8-8a3 3 0 0 1 4.3 4.3l-8 8a1.5 1.5 0 0 1-2.1-2.1l6.5-6.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"# };
 static ARROW_LEFT: rune::Icon = rune::Icon { name: "app-arrow-left", view: 24.0, body: r#"<path d="M19 12H5M11 6l-6 6 6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"# };
 static SEND: rune::Icon = rune::Icon { name: "app-send", view: 24.0, body: r#"<path d="M3 11.5L21 3l-6.5 18-3-7.5z" fill="currentColor"/>"# };
+static REPLY: rune::Icon = rune::Icon { name: "app-reply", view: 24.0, body: r#"<path d="M10 6L4 12l6 6M4 12h9a7 7 0 0 1 7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"# };
+static PENCIL: rune::Icon = rune::Icon { name: "app-pencil", view: 24.0, body: r#"<path d="M4 20.1l4.4-1.1L19.6 7.8a2.2 2.2 0 0 0-3.1-3.1L5.3 15.9z" fill="currentColor"/><path d="M14.6 6.5l3.1 3.1" stroke="currentColor" stroke-width="1.7" fill="none"/>"# };
+static X: rune::Icon = rune::Icon { name: "app-x", view: 24.0, body: r#"<path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" fill="none"/>"# };
 
 const PICKER_W: f32 = 440.0;
 const PICKER_H: f32 = 520.0;
@@ -71,7 +74,29 @@ pub fn composer(s: &State) -> El {
             .child(rune::icon(&SEND, 20.0).color(tint(!s.draft.text.trim().is_empty())))
             .cursor(rune::Cursor::Pointer).on_press_tx(|s: &mut State, tx: &mut rune::Tx| { send(s); tx.focus("composer", false) }));
     }
-    col().px(16.0).py(PAD_Y).child(super::typing_bar(s)).child(bar)
+    col().px(16.0).py(PAD_Y).child(super::typing_bar(s)).child(draft_bar(s)).child(bar)
+}
+
+/// Over the box while answering or editing a message: who/what, a peek at the text, and a way out.
+fn draft_bar(s: &State) -> El {
+    let (p, t) = (pal(), tok::theme(true));
+    let (label, peek, editing) = if let Some(r) = &s.draft_mode.reply {
+        (format!("Replying to {}", r.author.display()), r.content.clone(), false)
+    } else if s.draft_mode.editing.is_some() {
+        ("Editing message".to_string(), s.draft.text.clone(), true)
+    } else {
+        return el().size(0.0, 0.0);
+    };
+    row().key("draft-bar").w_full().h(30.0).px(10.0).gap(8.0).center_y().radius(6.0).fill(oklch(0.22, 0.008, 265.0))
+        .child(rune::icon(if editing { &PENCIL } else { &REPLY }, 14.0).color(t.text_secondary))
+        .child(text(label).font(type_::LABEL).color(t.text))
+        .child(text(peek).font(type_::LABEL).color(t.text_secondary).truncate().grow(1.0))
+        .child(row().key("draft-cancel").size(20.0, 20.0).center().radius(4.0).hover(p.hover)
+            .child(rune::icon(&X, 13.0).color(t.text_secondary))
+            .cursor(rune::Cursor::Pointer).on_press(|s: &mut State| {
+                s.draft_mode.reply = None;
+                if s.draft_mode.editing.take().is_some() { s.draft.clear() }
+            }))
 }
 
 /// Popups and the layer that closes them; added at the root so they draw above everything.
