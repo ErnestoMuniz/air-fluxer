@@ -46,6 +46,8 @@ pub struct Call {
     pub ping: Option<u32>,
     /// The pointer is on the signal icon: the dock explains the ping.
     pub ping_tip: bool,
+    /// This account is publishing its screen.
+    pub sharing: bool,
     /// Microphone, speakers, volumes and noise suppression; saved on every change.
     pub settings: Settings,
     pub shared: SharedAudio,
@@ -226,6 +228,7 @@ impl Call {
         self.speaking.clear();
         self.ping = None;
         self.ping_tip = false;
+        self.sharing = false;
         self.view = false;
         self.grid = false;
         self.viewer_tip = None;
@@ -276,6 +279,9 @@ impl Call {
         self.sound(if self.deafened { Sound::Deafen } else { Sound::Undeafen });
         self.push_flags(gw);
     }
+
+    /// Starts or stops publishing this Mac's screen to the call.
+    pub fn toggle_screen_share(&mut self) { self.engine_send(Cmd::ShareScreen(!self.sharing)) }
 
     /// `VOICE_SERVER_UPDATE`: where to connect.
     pub fn on_server_update(&mut self, d: &Value) {
@@ -329,6 +335,7 @@ impl Call {
                 Ev::Failed(why) => { self.error = Some(why); self.leave(gw) }
                 Ev::Speaking(users) => self.speaking = users.into_iter().collect(),
                 Ev::Ping(ms) => self.ping = Some(ms),
+                Ev::Sharing(on) => { self.sharing = on; if !on { self.view = self.view && on } }
                 Ev::Video => {}
             }
         }

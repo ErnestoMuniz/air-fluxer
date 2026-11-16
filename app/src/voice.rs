@@ -19,6 +19,12 @@ use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
 use livekit::webrtc::audio_stream::native::NativeAudioStream;
 use livekit::webrtc::video_frame::VideoFormatType;
 use livekit::webrtc::video_stream::native::NativeVideoStream;
+use livekit::webrtc::desktop_capturer::{DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions};
+use livekit::webrtc::video_frame::{I420Buffer, VideoFrame, VideoRotation};
+use livekit::webrtc::video_source::VideoResolution;
+use livekit::webrtc::video_source::RtcVideoSource;
+use livekit::webrtc::video_source::native::NativeVideoSource;
+use livekit::webrtc::native::yuv_helper;
 use nnnoiseless::DenoiseState;
 use rune::{Pixels, Waker};
 use std::borrow::Cow;
@@ -36,6 +42,8 @@ pub enum Cmd {
     Watch(Vec<String>),
     /// Keep the microphone open only to measure its level (the settings menu), outside a call.
     Meter(bool),
+    /// Publish this Mac's screen (the system picker on macOS chooses what to share).
+    ShareScreen(bool),
     Disconnect,
 }
 
@@ -48,6 +56,8 @@ pub enum Ev {
     Speaking(Vec<String>),
     /// Round-trip time to the room, in milliseconds (WebRTC's own measurement).
     Ping(u32),
+    /// This account started (true) or stopped (false) sharing its screen.
+    Sharing(bool),
     /// A picture appeared or went away in `Frames`.
     Video,
 }
@@ -106,9 +116,53 @@ struct Live {
     /// Decoders of the pictures on screen, by track id.
     video: std::collections::HashMap<String, tokio::task::JoinHandle<()>>,
     watch: std::collections::HashSet<String>,
+    /// Our own screen share, when one is running.
+    screen: Option<Screen>,
 }
 
 struct Remote { identity: String, track: String, task: tokio::task::JoinHandle<()> }
+
+/// A screen share this account is publishing: its sid, and how to stop capturing.
+struct Screen { sid: TrackSid, stop: Arc<AtomicBool> }
+
+impl Drop for Screen { fn drop(&mut self) { self.stop.store(true, Ordering::Relaxed) } }
+
+/// Captures the screen (the macOS picker chooses what) and publishes it as a screen-share track.
+async fn start_screen(room: &Room) -> Result<Screen, String> {
+    let source = NativeVideoSource::new(VideoResolution { width: 1920, height: 1080 }, true);
+    let track = LocalVideoTrack::create_video_track("screen", RtcVideoSource::Native(source.clone()));
+    let publish = TrackPublishOptions { source: TrackSource::Screenshare, ..Default::default() };
+    let publication = room.local_participant().publish_track(LocalTrack::Video(track), publish).await
+        .map_err(|e| format!("não foi possível compartilhar a tela: {e}"))?;
+    let sid = publication.sid();
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    std::thread::Builder::new().name("fluxer-screen".into()).spawn(move || {
+        let mut options = DesktopCapturerOptions::new(DesktopCaptureSourceType::Screen);
+        options.set_include_cursor(true);
+        let Some(mut capturer) = DesktopCapturer::new(options) else {
+            eprintln!("fluxer: no desktop capturer on this system");
+            return;
+        };
+        capturer.start_capture(None, move |result| {
+            let Ok(frame) = result else { return };
+            let (mut w, mut h) = (frame.width(), frame.height());
+            if w < 2 || h < 2 { return }
+            w &= !1;
+            h &= !1;
+            let mut buffer = I420Buffer::new(w as u32, h as u32);
+            let (sy, su, sv) = buffer.strides();
+            let (y, u, v) = buffer.data_mut();
+            yuv_helper::abgr_to_i420(frame.data(), frame.stride(), y, sy, u, su, v, sv, w, h);
+            source.capture_frame(&VideoFrame::new(VideoRotation::VideoRotation0, buffer));
+        });
+        while !flag.load(Ordering::Relaxed) {
+            capturer.capture_frame();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }).map_err(|e| format!("não foi possível iniciar a captura: {e}"))?;
+    Ok(Screen { sid, stop })
+}
 
 impl Drop for Live {
     fn drop(&mut self) {
@@ -364,6 +418,20 @@ async fn engine(mut cmds: UnboundedReceiver<Cmd>, out: mpsc::Sender<Ev>, wake: W
                         meter = None;
                         if on && live.is_none() { meter = Some(start_capture(mic_choice.clone(), shared.clone(), None)) }
                     }
+                    Cmd::ShareScreen(on) => {
+                        let Some(l) = live.as_mut() else { continue };
+                        if on {
+                            if l.screen.is_none() {
+                                match start_screen(&l.room).await {
+                                    Ok(s) => { l.screen = Some(s); send(Ev::Sharing(true)) }
+                                    Err(e) => send(Ev::Failed(e)),
+                                }
+                            }
+                        } else if let Some(s) = l.screen.take() {
+                            let _ = l.room.local_participant().unpublish_track(&s.sid).await;
+                            send(Ev::Sharing(false))
+                        }
+                    }
                 }
             }
             e = ev => match e {
@@ -452,7 +520,7 @@ async fn connect(endpoint: &str, token: &str, e2ee_key: Option<String>, muted: b
     let publish = TrackPublishOptions { source: TrackSource::Microphone, ..Default::default() };
     room.local_participant().publish_track(LocalTrack::Audio(track.clone()), publish).await
         .map_err(|e| format!("não foi possível abrir o microfone: {e}"))?;
-    Ok(Live { room, mic: track, events, capture, frames, feed, remote: Default::default(), speaker: settings.speaker, video: Default::default(), watch: Default::default() })
+    Ok(Live { room, mic: track, events, capture, frames, feed, remote: Default::default(), speaker: settings.speaker, video: Default::default(), watch: Default::default(), screen: None })
 }
 
 #[cfg(test)]

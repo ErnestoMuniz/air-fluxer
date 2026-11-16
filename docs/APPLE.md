@@ -29,6 +29,8 @@ arm64). O áudio do sistema é o CoreAudio; o Linux continua no PulseAudio. A ch
   de avatar (PNG quadrado), fuso do perfil a partir do sistema, volume de entrada/saída, medidor do
   microfone e supressão de ruído; "Get Plutonium" abre a página da instância.
 - **Membros**: filtro por nome/apelido.
+- **Voz**: o microfone segue o default do sistema; o botão de tela publica o Mac inteiro/janela pelo
+  seletor do ScreenCaptureKit do libwebrtc (track `Screenshare`, ~10 fps) e pode ser desligado na hora.
 - **Sobre** (`ui/settings.rs`): "macOS 26.2 (arm64)" via `sw_vers`, lido uma vez.
 - **Bundle** (`packaging/macos/`, `scripts/macos-bundle.sh`): `Fluxer.app` com `Info.plist`
   (microfone, câmera, versão), ícone gerado do `app/assets/logo.svg` e assinatura ad-hoc com
@@ -62,8 +64,8 @@ arm64). O áudio do sistema é o CoreAudio; o Linux continua no PulseAudio. A ch
   muda); as saídas continuam abrindo o default no início de cada stream. AirPods/Bluetooth ainda
   merecem um teste de áudio real.
 - **Volume do sistema** não é controlado; o app escala as amostras, como no Linux.
-- **Câmera e compartilhamento de tela**: permissões e o caminho do LiveKit no macOS; hoje só dá para
-  assistir ao stream de outras pessoas, não publicar o próprio.
+- **Câmera**: publicar a própria câmera ainda falta (a tela já vai; assistir aos streams dos outros já
+  funcionava).
 - **Chamadas em DM** não existem; só canais de voz de servidor.
 - **Badge no Dock**: falta (as notificações do sistema já saem para menção/DM).
 - **Universal**: `UNIVERSAL=1 scripts/macos-bundle.sh` junta arm64 + x86_64 com lipo; o primeiro build

@@ -423,6 +423,7 @@ fn dock(s: &State) -> El {
                     .child(rune::icon(&SIGNAL, 16.0).color(GREEN()))
                     .on_hover_change(|s: &mut State, inside, _| s.call.ping_tip = inside))
                 .child(text(if connected { "In voice chat" } else { "Connecting…" }).font(type_::TITLE).color(GREEN()).grow(1.0))
+                .child(icon_btn("screen-toggle", s.call.sharing, false, &SCREEN, |s| s.call.toggle_screen_share()))
                 .child(icon_btn("noise-toggle", s.call.settings.noise_suppression, false, &WAVEFORM, |s| { let on = !s.call.settings.noise_suppression; s.call.set_noise_suppression(on) }))
                 .child(icon_btn("voice-leave", false, false, &HANG_UP, leave_voice)))
             .child(text(place).font(type_::LABEL).color(t.text_secondary).truncate().w(dock_w(s) - 28.0))
