@@ -46,7 +46,7 @@ on this Mac. Shipping it to other people also needs a Developer ID signature and
 ## Looking at it without a window
 
 `-- --snap out.png [--scene NAME]` draws one frame to a PNG. Scenes: `login`, `ip`, `code`, `call`, `call-watch`,
-`dm`, `scroll`, `settings`, `settings-guild`, `settings-picker`, `settings-longbio`, `extras`, `quiet`,
+`call-ping`, `dm`, `scroll`, `settings`, `settings-guild`, `settings-picker`, `settings-longbio`, `extras`, `quiet`,
 `farjump`, `mentions`.
 
 ## Where it keeps things

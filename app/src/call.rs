@@ -42,6 +42,10 @@ pub struct Call {
     /// Users speaking right now.
     pub speaking: HashSet<String>,
     pub error: Option<String>,
+    /// Round-trip time to the voice room in milliseconds; None until WebRTC measures it.
+    pub ping: Option<u32>,
+    /// The pointer is on the signal icon: the dock explains the ping.
+    pub ping_tip: bool,
     /// Microphone, speakers, volumes and noise suppression; saved on every change.
     pub settings: Settings,
     pub shared: SharedAudio,
@@ -211,6 +215,8 @@ impl Call {
         self.channel_id = None;
         self.connection_id = None;
         self.speaking.clear();
+        self.ping = None;
+        self.ping_tip = false;
         self.view = false;
         self.grid = false;
         self.viewer_tip = None;
@@ -313,6 +319,7 @@ impl Call {
                 Ev::Disconnected => if self.active() { self.leave(gw) },
                 Ev::Failed(why) => { self.error = Some(why); self.leave(gw) }
                 Ev::Speaking(users) => self.speaking = users.into_iter().collect(),
+                Ev::Ping(ms) => self.ping = Some(ms),
                 Ev::Video => {}
             }
         }

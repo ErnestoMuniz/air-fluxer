@@ -565,7 +565,9 @@ pub fn send(s: &mut State) {
     let body = s.draft.text.trim().to_string();
     if body.is_empty() { return }
     send_body(s, body);
-    s.draft = TextEdit::new("");
+    // Cleared in place, not replaced: a fresh TextEdit would drop the caret and the next message
+    // would need another click on the box.
+    s.draft.clear();
 }
 
 /// Sends `body` to the open channel: shown at once as pending, confirmed by the REST reply or the
@@ -592,7 +594,7 @@ pub fn send_sticker(s: &mut State, id: &str) {
 /// A GIF or saved picture goes out as its link; the server turns it into the picture.
 pub fn send_link(s: &mut State, url: String) { send_body(s, url); s.picker.close(); reconcile(s) }
 
-pub fn insert_text(s: &mut State, text: &str) { s.draft = TextEdit::new(format!("{}{text}", s.draft.text)) }
+pub fn insert_text(s: &mut State, text: &str) { let t = format!("{}{text}", s.draft.text); s.draft.replace_text(t) }
 
 /// Asks the image cache for what the open picker tab shows.
 pub fn picker_images(s: &mut State) {
@@ -640,6 +642,7 @@ fn main() {
             // The call's mosaic with a screen share, for looking at it without a server.
             ("call", |s| { demo_call(s); }),
             ("call-watch", |s| { demo_call(s); s.call.watching.push("demo:demo-v0:c1".into()); }),
+            ("call-ping", |s| { demo_call(s); s.call.ping = Some(42); s.call.ping_tip = true; }),
             ("dm", |s| { s.chat.open_guild(None); }),
             // The message list's scroll thumb, shown as with the pointer near it (see `--scene scroll`).
             ("scroll", |s| { s.thumb.pin(); }),
@@ -880,10 +883,12 @@ mod tests {
     fn demo_send_appears_at_once_and_clears_the_draft() {
         let mut s = State::default();
         s.draft = TextEdit::new("oi  ");
+        s.draft.focused = true;
         send(&mut s);
         let log = s.chat.log().unwrap();
         assert_eq!((log.msgs.last().unwrap().body.as_str(), &log.msgs.last().unwrap().delivery), ("oi", &Delivery::Sent));
         assert!(s.draft.text.is_empty());
+        assert!(s.draft.focused, "the box keeps the caret for the next message");
         send(&mut s);
         assert_eq!(s.chat.log().unwrap().msgs.len(), 10_001, "an empty draft sends nothing");
     }
@@ -1005,6 +1010,24 @@ mod tests {
         assert!(poll(&mut s, 0.0, &mut Tx::default()));
         assert!(s.screen == Screen::Login && s.session.is_none());
         assert!(s.auth.error.as_deref().is_some_and(|e| e.contains("sessão")));
+    }
+
+    #[test]
+    fn the_voice_signal_explains_the_ping_on_hover() {
+        let env = Env { system_dark: true, scale: 2.0 };
+        let mut rt = Runtime::new(State::default(), ui::view, (1100.0, 700.0), env);
+        rt.update(|s, _| {
+            s.call.phase = crate::call::Phase::Connected;
+            s.call.channel_id = Some("demo-v0".into());
+            s.call.ping = Some(42);
+            s.call.ping_tip = true;
+        });
+        rt.frame(0.0);
+        assert!(rt.find("voice-signal").is_some());
+        assert!(rt.find("voice-ping").is_some(), "hovering the signal shows the round-trip time");
+        rt.update(|s, _| s.call.ping_tip = false);
+        rt.frame(0.0);
+        assert!(rt.find("voice-ping").is_none(), "the tip goes with the pointer");
     }
 
     #[test]

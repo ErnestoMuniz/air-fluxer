@@ -416,7 +416,9 @@ fn dock(s: &State) -> El {
         }
         card = card.child(col().key("voice-section").h(DOCK_CALL_H).px(14.0).py(10.0).gap(6.0)
             .child(row().h(30.0).center_y().gap(8.0)
-                .child(rune::icon(&SIGNAL, 16.0).color(GREEN()))
+                .child(row().key("voice-signal").size(16.0, 16.0).center()
+                    .child(rune::icon(&SIGNAL, 16.0).color(GREEN()))
+                    .on_hover_change(|s: &mut State, inside, _| s.call.ping_tip = inside))
                 .child(text(if connected { "In voice chat" } else { "Connecting…" }).font(type_::TITLE).color(GREEN()).grow(1.0))
                 .child(icon_btn("noise-toggle", s.call.settings.noise_suppression, false, &WAVEFORM, |s| { let on = !s.call.settings.noise_suppression; s.call.set_noise_suppression(on) }))
                 .child(icon_btn("voice-leave", false, false, &HANG_UP, leave_voice)))
@@ -442,6 +444,22 @@ fn dock(s: &State) -> El {
         .child(mic).child(deaf)
         .child(icon_btn("audio-settings", false, false, &GEAR, settings::open)))
         .pin(Some(8.0), None, None, Some(8.0))
+}
+
+/// The small card that explains the voice signal icon: the room's round-trip time.
+fn ping_tip(s: &State) -> El {
+    if !s.call.ping_tip || !s.call.active() { return el().size(0.0, 0.0) }
+    let (p, t) = (pal(), tok::theme(true));
+    let (label, color) = match s.call.ping {
+        Some(ms) if ms < 80 => (format!("Ping {ms} ms"), GREEN()),
+        Some(ms) if ms < 160 => (format!("Ping {ms} ms"), oklch(0.78, 0.16, 80.0)),
+        Some(ms) => (format!("Ping {ms} ms"), p.unread),
+        None => ("Ping: measuring…".to_string(), t.text_secondary),
+    };
+    row().key("voice-ping").h(24.0).px(9.0).center_y().radius(6.0)
+        .fill(oklch(0.2, 0.008, 265.0)).border(1.0, p.line).shadow(4.0, 14.0, t.shadow)
+        .child(text(label).font(type_::LABEL).color(color))
+        .anchored("voice-signal", rune::Side::Top, rune::Align::Start, 6.0)
 }
 
 /// A horizontal slider, 0..=1: drag or click anywhere on it.
@@ -1248,7 +1266,7 @@ fn main_view(s: &State, stage: Option<[f32; 2]>) -> El {
     // A mention's card anchors beside this marker at the point the pointer was on.
     let mention_anchor = s.profile.as_ref().and_then(|p| p.at)
         .map_or_else(|| el().size(0.0, 0.0), |(x, y)| el().key("mention-anchor").absolute(x, y).size(1.0, 1.0));
-    all.child(menu_scrim(s)).child(user_menu_scrim(s)).child(profile_scrim(s)).child(dock(s)).child(audio_menu(s)).child(ctx_point(s)).child(user_menu(s)).child(mention_anchor).child(profile_card(s)).child(settings::dialog(s))
+    all.child(menu_scrim(s)).child(user_menu_scrim(s)).child(profile_scrim(s)).child(dock(s)).child(audio_menu(s)).child(ctx_point(s)).child(user_menu(s)).child(mention_anchor).child(profile_card(s)).child(ping_tip(s)).child(settings::dialog(s))
         .on_pointer_move_local(|s: &mut State, p, tx| { s.pointer.set([p.window_x, p.window_y]); tx.live_only() })
         .on_window_focus(|s: &mut State, focused, _| set_focus(s, focused))
 }

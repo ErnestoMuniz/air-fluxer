@@ -46,6 +46,8 @@ pub enum Ev {
     Failed(String),
     /// User ids of everyone speaking now, me included.
     Speaking(Vec<String>),
+    /// Round-trip time to the room, in milliseconds (WebRTC's own measurement).
+    Ping(u32),
     /// A picture appeared or went away in `Frames`.
     Video,
 }
@@ -249,6 +251,23 @@ fn show_video(mut stream: NativeVideoStream, key: String, frames: Frames, tell: 
     })
 }
 
+/// The room's round-trip time in milliseconds: the RTCP report for our microphone when there is
+/// one, else the ICE candidate pair's own measurement.
+fn rtt_ms(stats: &[livekit::webrtc::stats::RtcStats]) -> Option<u32> {
+    use livekit::webrtc::stats::RtcStats;
+    let mut pair = None;
+    for s in stats {
+        match s {
+            RtcStats::RemoteInboundRtp(r) if r.remote_inbound.round_trip_time > 0.0 =>
+                return Some((r.remote_inbound.round_trip_time * 1000.0).round() as u32),
+            RtcStats::CandidatePair(c) if c.candidate_pair.current_round_trip_time > 0.0 =>
+                pair = Some((c.candidate_pair.current_round_trip_time * 1000.0).round() as u32),
+            _ => {}
+        }
+    }
+    pair
+}
+
 async fn engine(mut cmds: UnboundedReceiver<Cmd>, out: mpsc::Sender<Ev>, wake: Waker, shared: Arc<Shared>, frames: Frames) {
     let send = |e: Ev| { let _ = out.send(e); wake(); };
     let tell = { let out = out.clone(); let wake = wake.clone(); move || { let _ = out.send(Ev::Video); wake(); } };
@@ -256,11 +275,16 @@ async fn engine(mut cmds: UnboundedReceiver<Cmd>, out: mpsc::Sender<Ev>, wake: W
     let mut live: Option<Live> = None;
     // The green rings come from the sound itself, checked often so they show at once.
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(30));
+    // The room's round-trip time, asked from WebRTC every few seconds; not every frame (a stats
+    // report walks every stream) and not never (it changes with the network).
+    let mut ping = tokio::time::interval(std::time::Duration::from_secs(3));
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut shown: Vec<String> = Vec::new();
     let (mut meter, mut want_meter, mut mic_choice) = (None::<Capture>, false, None::<String>);
     loop {
         // While in a room, its events and the commands are served together.
         let in_room = live.is_some();
+        let probe = live.as_ref().map(|l| l.mic.clone());
         let ev = async {
             match live.as_mut() { Some(l) => l.events.recv().await, None => std::future::pending().await }
         };
@@ -268,6 +292,11 @@ async fn engine(mut cmds: UnboundedReceiver<Cmd>, out: mpsc::Sender<Ev>, wake: W
             _ = tick.tick(), if in_room => {
                 let now = shared.speaking_ids(SPEAK_HOLD);
                 if now != shown { shown = now.clone(); send(Ev::Speaking(now)) }
+            }
+            _ = ping.tick(), if in_room => {
+                if let Some(track) = probe
+                    && let Ok(stats) = track.get_stats().await
+                    && let Some(ms) = rtt_ms(&stats) { send(Ev::Ping(ms)) }
             }
             cmd = cmds.recv() => {
                 let Some(cmd) = cmd else { break };
@@ -427,6 +456,16 @@ mod tests {
             Ok(r) => assert!(r.is_err(), "a dead endpoint must not produce a room"),
             Err(_) => eprintln!("the dead endpoint kept retrying; the factory was created"),
         }
+    }
+
+    #[test]
+    fn the_round_trip_time_comes_from_the_rtcp_report() {
+        use livekit::webrtc::stats::RtcStats;
+        let s: RtcStats = serde_json::from_value(serde_json::json!({"type": "remote-inbound-rtp", "roundTripTime": 0.042})).unwrap();
+        assert_eq!(rtt_ms(&[s]), Some(42));
+        let pair: RtcStats = serde_json::from_value(serde_json::json!({"type": "candidate-pair", "currentRoundTripTime": 0.125})).unwrap();
+        assert_eq!(rtt_ms(&[pair]), Some(125), "the candidate pair answers when no RTCP report is in yet");
+        assert_eq!(rtt_ms(&[]), None);
     }
 
     #[test]

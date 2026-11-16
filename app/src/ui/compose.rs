@@ -60,7 +60,7 @@ pub fn composer(s: &State) -> El {
             .key("composer")
             .placeholder(place, t.text_secondary)
             .on_edit(|s: &mut State| &mut s.draft)
-            .on_submit(|s: &mut State, _| send(s))
+            .on_submit(|s: &mut State, tx| { send(s); tx.focus("composer", false) })
             .grow(1.0).min_w(0.0).px(8.0).py(12.0))
         .child(btn("btn-gifs", Tab::Gifs, prefs.gifs_button, gif_icon))
         .child(btn("btn-media", Tab::Media, prefs.media_button, rune::icon(&IMAGE, 22.0).color(tint(s.picker.open == Some(Tab::Media)))))
@@ -69,7 +69,7 @@ pub fn composer(s: &State) -> El {
     if prefs.send_button {
         bar = bar.child(row().key("btn-send").size(34.0, 34.0).radius(radius::SM).center().hover(p.select)
             .child(rune::icon(&SEND, 20.0).color(tint(!s.draft.text.trim().is_empty())))
-            .cursor(rune::Cursor::Pointer).on_press(|s: &mut State| send(s)));
+            .cursor(rune::Cursor::Pointer).on_press_tx(|s: &mut State, tx: &mut rune::Tx| { send(s); tx.focus("composer", false) }));
     }
     col().px(16.0).py(PAD_Y).child(super::typing_bar(s)).child(bar)
 }
