@@ -11,6 +11,7 @@ mod clock;
 mod gateway;
 mod model;
 mod net;
+mod notify;
 mod picker;
 mod prefs;
 mod richtext;
@@ -54,6 +55,42 @@ pub struct Draft {
     pub editing: Option<String>,
 }
 
+/// The channel search: the box, the query of the answer on screen, and the results.
+pub struct Search {
+    pub open: bool,
+    pub input: TextEdit,
+    pub query: String,
+    pub results: Vec<Msg>,
+    pub loading: bool,
+    pub indexing: bool,
+    pub error: Option<String>,
+}
+
+impl Default for Search {
+    fn default() -> Self { Search { open: false, input: TextEdit::new(""), query: String::new(), results: vec![], loading: false, indexing: false, error: None } }
+}
+
+pub fn run_search(s: &mut State) {
+    let Some(cid) = s.chat.channel_id().map(String::from) else { return };
+    let q = s.search.input.text.trim().to_string();
+    if q.is_empty() { return }
+    s.search.query = q.clone();
+    s.search.loading = true;
+    s.search.indexing = false;
+    s.search.error = None;
+    s.net.search(&cid, &q);
+}
+
+fn on_search(s: &mut State, query: String, res: Result<fluxer_client::api::SearchOutcome, String>) {
+    if s.search.query != query { return }
+    s.search.loading = false;
+    match res {
+        Ok(fluxer_client::api::SearchOutcome::Indexing) => { s.search.indexing = true; s.search.results.clear() }
+        Ok(fluxer_client::api::SearchOutcome::Hits(msgs)) => { s.search.results = msgs.into_iter().map(Into::into).collect() }
+        Err(e) => s.search.error = Some(e),
+    }
+}
+
 pub struct State {
     pub rail_hover: Option<String>,
     pub settings_open: bool,
@@ -85,6 +122,8 @@ pub struct State {
     pub draft_mode: Draft,
     /// The (channel, message) already acknowledged to the server, so one ack goes per message.
     acked: Option<(String, String)>,
+    /// The channel search (header magnifier).
+    pub search: Search,
     pub profile: Option<Prof>,
     /// Profiles fetched so far, by `net::profile_key`.
     pub profiles: std::collections::HashMap<String, fluxer_client::api::Profile>,
@@ -159,7 +198,7 @@ impl Default for State {
         State {
             rail_hover: None, settings_open: false, pf: Default::default(), prof: [TextEdit::new(""), TextEdit::new(""), TextEdit::new(""), TextEdit::new("")],
             picker: Default::default(), prefs: prefs::load(), plus_open: false, msg_hover: None, react_picker: None, highlighted: None, pointer: rune::Live::new([0.0, 0.0]), member_search: TextEdit::new(""), video: None, customize_open: false, notice: None,
-            ctx: None, msg_menu: None, draft_mode: Draft { reply: None, editing: None }, acked: None, profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
+            ctx: None, msg_menu: None, draft_mode: Draft { reply: None, editing: None }, acked: None, search: Default::default(), profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
             intro: 0.0, intro_t0: None, chat: demo_chat(), net: net::Net::default(), draft: TextEdit::new(""), gateway: None, subscribed: None, synced_guilds: Default::default(), show_members: true, call: Default::default(), focused: true, visible: 0..0, typing_wake: false, thumb: Default::default(),
         }
     }
@@ -219,7 +258,15 @@ fn apply(s: &mut State, e: Event) -> bool {
                 (Some(c), Some(m)) => s.chat.on_ack(c, m),
                 _ => false,
             },
-            "MESSAGE_CREATE" => Message::from_json(&d).map(|m| s.chat.on_message(m)).is_some(),
+            "MESSAGE_CREATE" => match Message::from_json(&d) {
+                Some(m) => {
+                    let copy = m.clone();
+                    s.chat.on_message(m);
+                    if !s.focused { crate::notify::incoming(s, &copy) }
+                    true
+                }
+                None => false,
+            },
             "MESSAGE_UPDATE" => Message::from_json(&d).is_some_and(|m| s.chat.on_message_updated(m)),
             "MESSAGE_REACTION_ADD" | "MESSAGE_REACTION_REMOVE" => {
                 let me = s.chat.me.as_ref().map(|u| u.id.as_str());
@@ -364,6 +411,7 @@ fn on_net(s: &mut State, d: net::Done) -> bool {
         net::Done::Acked(_) => false,
         net::Done::AvatarSaved(res) => { ui::settings::on_avatar(s, res); true }
         net::Done::TimezoneSaved(res) => { ui::settings::on_timezone(s, res); true }
+        net::Done::Search { query, res } => { on_search(s, query, res); true }
         net::Done::Profile { key, res: Ok(p) } => {
             if let (Some(media), Some(h)) = (s.chat.media.clone(), p.banner.as_deref()) {
                 if let Some(uid) = key.split('@').next() { s.net.want_image_first(&fluxer_client::api::banner_still_url(&media, uid, h, 600)) }
@@ -1175,6 +1223,20 @@ mod tests {
         assert!(rt.find("msg-menu").is_some());
         assert!(rt.find("mm-reply").is_some() && rt.find("mm-copy").is_some());
         assert!(rt.find("mm-edit").is_some() && rt.find("mm-delete").is_some(), "own messages can be changed");
+    }
+
+    #[test]
+    fn the_channel_search_has_a_box_and_the_matching_messages() {
+        let mut rt = rt();
+        rt.update(|s, _| {
+            s.search.open = true;
+            let me = s.chat.me.clone().expect("demo user");
+            s.search.results = vec![Msg::local("found".into(), me, "achado".into(), Delivery::Sent)];
+        });
+        rt.frame(0.0);
+        assert!(rt.find("search-input").is_some());
+        assert!(rt.find("search-go").is_some());
+        assert!(rt.find("sr-found").is_some());
     }
 
     #[test]

@@ -1250,6 +1250,54 @@ fn members_panel(s: &State) -> El {
         .child(resize_handle("resize-members", false, members_w(s), |s, w| s.prefs.members_w = w.clamp(200.0, 420.0) as u32).pin(Some(0.0), Some(0.0), None, Some(0.0)))
 }
 
+/// The channel search: query box and the matching messages of the open channel.
+fn search_view(s: &State) -> El {
+    let (p, t) = (pal(), tok::theme(true));
+    let bar = row().px(16.0).py(10.0).gap(8.0).center_y()
+        .child(rune::icon(&SEARCH_ICON, 16.0).color(t.text_secondary))
+        .child(text_input(&s.search.input, type_::BODY).key("search-input")
+            .placeholder("Search in this channel", t.text_secondary)
+            .on_edit(|s: &mut State| &mut s.search.input)
+            .on_submit(|s: &mut State, _| crate::run_search(s))
+            .grow(1.0).min_w(0.0))
+        .child(row().key("search-go").h(32.0).px(12.0).radius(radius::SM).center().fill(p.brand).hover(p.brand)
+            .child(text("Search").font(type_::LABEL).color(t.knob))
+            .cursor(rune::Cursor::Pointer).on_press(|s: &mut State| crate::run_search(s)));
+    let note = |words: &str, color: Color| row().h(40.0).px(16.0).center_y()
+        .child(text(words.to_string()).font(type_::LABEL).color(color));
+    let mut body = col().gap(2.0).px(16.0).py(8.0);
+    if s.search.loading {
+        body = body.child(note("Searching…", t.text_secondary));
+    } else if s.search.indexing {
+        body = body.child(note("The server is still indexing this channel; try again soon.", t.text_secondary));
+    } else if let Some(e) = &s.search.error {
+        body = body.child(note(e, p.unread));
+    } else if s.search.results.is_empty() {
+        if !s.search.query.is_empty() { body = body.child(note("No messages found.", t.text_secondary)) }
+        else { body = body.child(note("Type something to search the messages of this channel.", t.text_secondary)) }
+    } else {
+        let now = crate::clock::now_ms();
+        for m in &s.search.results {
+            let id = m.id.clone();
+            let loaded = s.chat.log().is_some_and(|l| l.msgs.iter().any(|q| q.id == id));
+            body = body.child(row().key(format!("sr-{id}")).w_full().px(10.0).py(8.0).gap(10.0).items_start()
+                .radius(radius::SM).hover(p.hover)
+                .child(avatar(s, &m.author, 26.0))
+                .child(col().gap(2.0).grow(1.0).min_w(0.0)
+                    .child(row().gap(8.0).center_y()
+                        .child(text(m.author.display().to_string()).font(type_::TITLE).color(t.text))
+                        .child(text(m.ts.map(|ts| crate::clock::full(ts, now)).unwrap_or_default()).font(type_::LABEL).color(t.text_secondary)))
+                    .child(text(m.body.clone()).font(type_::BODY).color(t.text).truncate()))
+                .cursor(rune::Cursor::Pointer).on_press_tx(move |s: &mut State, tx: &mut rune::Tx| {
+                    s.search.open = false;
+                    if loaded { crate::jump_to(s, tx, &id) } else { s.notice = Some("Essa mensagem está fora do trecho carregado do histórico.".into()) }
+                }));
+        }
+    }
+    col().w_full().h_full().child(bar).child(el().w_full().h(1.0).fill(p.line))
+        .child(body.scroll(ScrollSpec { stick_bottom: false }).grow(1.0).min_h(0.0))
+}
+
 /// The "someone is typing" line, or nothing.
 fn typing_notice(s: &State) -> Option<String> {
     let me = s.chat.me.as_ref().map(|u| u.id.as_str());
@@ -1324,12 +1372,24 @@ fn main_view(s: &State, stage: Option<[f32; 2]>) -> El {
             .px(10.0).py(6.0).radius(radius::SM).fill(if s.show_members { p.select } else { oklcha(0.0, 0.0, 0.0, 0.0) }).hover(p.select)
             .cursor(rune::Cursor::Pointer).on_press(|s: &mut State| s.show_members = !s.show_members));
     }
+    if s.chat.voice_view.is_none() && mosaic_channel.is_none() {
+        header = header.child(row().key("search-toggle").size(28.0, 28.0).center().radius(radius::SM)
+            .fill(if s.search.open { p.select } else { oklcha(0.0, 0.0, 0.0, 0.0) }).hover(p.select)
+            .child(rune::icon(&SEARCH_ICON, 16.0).color(if s.search.open { t.text } else { t.text_secondary }))
+            .cursor(rune::Cursor::Pointer)
+            .on_press_tx(|s: &mut State, tx: &mut rune::Tx| {
+                s.search.open = !s.search.open;
+                if s.search.open { tx.focus("search-input", false) } else { s.search.results.clear(); s.search.input.clear() }
+            }));
+    }
     // The message box floats over the bottom of the chat, so the messages scroll behind its
     // frosted glass instead of stopping dead above a solid strip.
     let composer = compose::composer(s).pin(Some(0.0), None, Some(0.0), Some(0.0));
     let mosaic = s.call.view && s.call.active();
     let main = if mosaic {
         col().grow(1.0).h_full().min_w(0.0).fill(p.chat).child(header).child(el().w_full().h(1.0).fill(p.line)).child(mosaic::view(s, stage))
+    } else if s.search.open {
+        col().grow(1.0).h_full().min_w(0.0).fill(p.chat).child(header).child(el().w_full().h(1.0).fill(p.line)).child(search_view(s))
     } else {
         col().grow(1.0).h_full().min_w(0.0).fill(p.chat).child(header).child(el().w_full().h(1.0).fill(p.line))
             .child(voice_panel(s)).child(message_list(s)).child(composer)

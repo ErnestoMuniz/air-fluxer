@@ -101,6 +101,9 @@ pub enum Done {
     AvatarSaved(Result<serde_json::Value, String>),
     /// The account's profile time zone.
     TimezoneSaved(Result<serde_json::Value, String>),
+    /// Messages matching a channel search; the query is echoed so a late answer for an older
+    /// query does not replace the newer results.
+    Search { query: String, res: Result<api::SearchOutcome, String> },
     Profile { key: String, res: Result<api::Profile, String> },
     /// A message sent without a local copy (a sticker): the gateway brings it back; only failures matter.
     Posted(Result<(), String>),
@@ -236,6 +239,14 @@ impl Net {
         let Some(api) = self.api.clone() else { return };
         let (c, m) = (channel.to_string(), message_id.to_string());
         self.job(move || api.ack(&c, &m).map_err(|e| e.message), Done::Acked);
+    }
+
+    /// Searches the open channel's messages.
+    pub fn search(&self, channel: &str, query: &str) {
+        let Some(api) = self.api.clone() else { return };
+        let (c, q) = (channel.to_string(), query.to_string());
+        let echo = q.clone();
+        self.job(move || api.search(&c, &q).map_err(|e| e.message), move |res| Done::Search { query: echo, res });
     }
 
     /// Sets (a base64 PNG) or removes the account's avatar.

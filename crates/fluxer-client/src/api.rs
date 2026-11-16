@@ -339,6 +339,14 @@ pub struct Api {
     token: String,
 }
 
+/// What a message search returned.
+#[derive(Clone, Debug)]
+pub enum SearchOutcome {
+    /// The server is still building its index for this channel.
+    Indexing,
+    Hits(Vec<Message>),
+}
+
 impl Api {
     pub fn new(ep: Endpoints, token: impl Into<String>) -> Api { Api { ep, token: token.into() } }
     pub fn endpoints(&self) -> &Endpoints { &self.ep }
@@ -451,6 +459,26 @@ impl Api {
         let status = res.status().as_u16();
         let body = res.body_mut().read_json().unwrap_or(Value::Null);
         if (200..300).contains(&status) { Ok(()) } else { Err(failure(&crate::rest::Reply { status, body })) }
+    }
+
+    /// Messages of `channel_id` matching `query`, newest first (`/search/messages`); `Indexing`
+    /// while the server builds its index.
+    pub fn search(&self, channel_id: &str, query: &str) -> Result<SearchOutcome, Error> {
+        let url = format!("{}/search/messages", self.ep.api_client);
+        let mut r = agent().post(&url).header("Accept", "application/json").header("Authorization", &self.token);
+        if let Some(o) = &self.ep.origin { r = r.header("Origin", o.as_str()) }
+        let body = json!({
+            "content": query, "channel_id": [channel_id], "context_channel_id": channel_id,
+            "hits_per_page": 25, "page": 1,
+        });
+        let mut res = r.send_json(&body).map_err(|e| Error::local(format!("falha de rede: {e}")))?;
+        let status = res.status().as_u16();
+        let body = res.body_mut().read_json().unwrap_or(Value::Null);
+        if !(200..300).contains(&status) { return Err(failure(&crate::rest::Reply { status, body })) }
+        if body.get("indexing").and_then(Value::as_bool) == Some(true) { return Ok(SearchOutcome::Indexing) }
+        let msgs = body.get("messages").and_then(Value::as_array).into_iter().flatten()
+            .filter_map(Message::from_json).collect();
+        Ok(SearchOutcome::Hits(msgs))
     }
 
     /// A message with one file attached: `multipart/form-data` with the message as `payload_json`
