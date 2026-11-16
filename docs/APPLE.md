@@ -20,6 +20,13 @@ arm64). O áudio do sistema é o CoreAudio; o Linux continua no PulseAudio. A ch
 - **Configurações**: página "Voice & audio" no diálogo de configurações para escolher o microfone e a
   saída de som (System default ou um dispositivo da lista, com botão de atualizar). A escolha vale na
   hora, inclusive dentro de uma chamada.
+- **Mensagens**: menu de contexto (Responder, Copiar texto, Editar e Apagar nas mensagens da própria
+  conta), barra de resposta/edição no composer com `message_reference`, e ack de leitura
+  (`/read-states/ack`) para os badges e a linha de "novas" não ficarem velhos.
+- **Configurações**: página de perfil responsiva; busca falsa e botão de usuário removidos; troca/remoção
+  de avatar (PNG quadrado), fuso do perfil a partir do sistema, volume de entrada/saída, medidor do
+  microfone e supressão de ruído; "Get Plutonium" abre a página da instância.
+- **Membros**: filtro por nome/apelido.
 - **Sobre** (`ui/settings.rs`): "macOS 26.2 (arm64)" via `sw_vers`, lido uma vez.
 - **Bundle** (`packaging/macos/`, `scripts/macos-bundle.sh`): `Fluxer.app` com `Info.plist`
   (microfone, câmera, versão), ícone gerado do `app/assets/logo.svg` e assinatura ad-hoc com
@@ -35,7 +42,7 @@ arm64). O áudio do sistema é o CoreAudio; o Linux continua no PulseAudio. A ch
 
 ## Verificado
 
-- `cargo check` e `cargo test -p fluxer-app -p fluxer-client` (82 testes no app + 1 ignorado que abre os
+- `cargo check` e `cargo test -p fluxer-app -p fluxer-client` (87 testes no app + 1 ignorado que abre os
   dispositivos, 29 no client).
 - `--snap` headless nas cenas demo e `dm`.
 - Janela real abrindo no Metal, com semáforos e menus Edit/Window do Rune; ⌘Q fecha.
@@ -46,11 +53,18 @@ arm64). O áudio do sistema é o CoreAudio; o Linux continua no PulseAudio. A ch
 
 - **Microfone no bundle**: a primeira chamada pede permissão (TCC). Testar dentro do `Fluxer.app`
   assinado, não só no binário solto.
-- **Distribuição**: Developer ID + notarização + `stapler`; hoje é assinatura ad-hoc.
+- **Distribuição gratuita**: a assinatura ad-hoc é a definitiva por enquanto (sem Developer ID). Quem
+  baixar o `.app` precisa abrir com o botão direito → Abrir, ou rodar
+  `xattr -dr com.apple.quarantine Fluxer.app`; o Gatekeeper não reconhece o binário na primeira vez.
 - **Troca de dispositivo padrão** em tempo real: o `cpal` não segue o default do sistema sozinho;
   hoje só ao reabrir o stream (entrar na chamada/menu). AirPods e Bluetooth merecem um teste.
 - **Volume do sistema** não é controlado; o app escala as amostras, como no Linux.
-- **Câmera e compartilhamento de tela**: permissões e o caminho do LiveKit no macOS.
+- **Câmera e compartilhamento de tela**: permissões e o caminho do LiveKit no macOS; hoje só dá para
+  assistir ao stream de outras pessoas, não publicar o próprio.
+- **Chamadas em DM** não existem; só canais de voz de servidor.
+- **Busca de mensagens**: o campo de busca do servidor ainda não está no cliente (o de membros está).
+- **Notificações e badge no Dock**: nenhum dos dois; o app não avisa fora da janela.
 - **Universal**: só `aarch64-apple-darwin` foi construído; falta o `x86_64` (e o libwebrtc dele).
-- **Integrações nativas**: keychain para a sessão, notificações, deep links, LaunchServices.
+- **Integrações nativas**: keychain para a sessão, notificações, deep links, LaunchServices,
+  auto-update e seletor de instância (hoje fixa em `fluxer.com`).
 - **Ícone**: hoje é o círculo do logo; o estilo do macOS costuma ser um "squircle" com margem.

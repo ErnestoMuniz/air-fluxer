@@ -39,9 +39,10 @@ scripts/macos-bundle.sh                     # → target/release/Fluxer.app
 open target/release/Fluxer.app
 ```
 
-The bundle carries the microphone and camera usage strings and is ad-hoc signed, which is enough to run it
-on this Mac. Shipping it to other people also needs a Developer ID signature and notarisation. See
-`docs/APPLE.md` for what the macOS port does and what is still missing.
+The bundle carries the microphone and camera usage strings and is ad-hoc signed, with no paid developer account:
+it runs on this Mac, and anyone who downloads it opens it with **right-click → Open** (or
+`xattr -dr com.apple.quarantine Fluxer.app`) the first time. See `docs/APPLE.md` for what the macOS port does
+and what is still missing.
 
 ## Looking at it without a window
 
