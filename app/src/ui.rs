@@ -6,6 +6,7 @@ use fluxer_client::api::{self, Attachment, User};
 use rune::tok::{self, radius, type_};
 use rune::{Color, Cx, El, GrowthSpec, ScrollSpec, col, el, oklch, oklcha, row, text, text_input};
 use fluxer_client::api::{Embed, Quoted, snowflake_cmp};
+use crate::icons::*;
 use crate::roster::{self, Row};
 use rune_kit::{Button, ButtonVariant, Kit, Markdown, MarkdownStyle, TextArea, TextInput};
 
@@ -34,34 +35,6 @@ fn resize_handle(key: &str, grow_right: bool, current: f32, set: fn(&mut State, 
         })
 }
 
-
-static SPEAKER: rune::Icon = rune::Icon { name: "app-speaker", view: 24.0, body: r#"<path d="M4 9v6h4l5 4V5L8 9z" fill="currentColor"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>"# };
-static MIC: rune::Icon = rune::Icon { name: "app-mic", view: 24.0, body: r#"<rect x="9" y="3" width="6" height="12" rx="3" fill="currentColor"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>"# };
-static MIC_OFF: rune::Icon = rune::Icon { name: "app-mic-off", view: 24.0, body: r#"<rect x="9" y="3" width="6" height="12" rx="3" fill="currentColor"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M4 4l16 16" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" fill="none"/>"# };
-static HEADSET: rune::Icon = rune::Icon { name: "app-headset", view: 24.0, body: r#"<path d="M4 15v-3a8 8 0 0 1 16 0v3" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/><rect x="3" y="13" width="4.5" height="7" rx="2" fill="currentColor"/><rect x="16.5" y="13" width="4.5" height="7" rx="2" fill="currentColor"/>"# };
-static HEADSET_OFF: rune::Icon = rune::Icon { name: "app-headset-off", view: 24.0, body: r#"<path d="M4 15v-3a8 8 0 0 1 16 0v3" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/><rect x="3" y="13" width="4.5" height="7" rx="2" fill="currentColor"/><rect x="16.5" y="13" width="4.5" height="7" rx="2" fill="currentColor"/><path d="M4 4l16 16" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>"# };
-static GEAR: rune::Icon = rune::Icon { name: "app-gear", view: 24.0, body: r#"<circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2" fill="none"/><circle cx="12" cy="12" r="7" stroke="currentColor" stroke-width="2" fill="none"/><path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>"# };
-static SCREEN: rune::Icon = rune::Icon { name: "app-screen", view: 24.0, body: r#"<rect x="3" y="4" width="18" height="12" rx="2" stroke="currentColor" stroke-width="2" fill="none"/><path d="M8 20h8M12 16v4" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>"# };
-static EYE: rune::Icon = rune::Icon { name: "app-eye", view: 24.0, body: r#"<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" fill="currentColor"/><circle cx="12" cy="12" r="3" fill="black"/>"# };
-static GRID: rune::Icon = rune::Icon { name: "app-grid", view: 24.0, body: r#"<rect x="4" y="4" width="7" height="7" rx="1.5" fill="currentColor"/><rect x="13" y="4" width="7" height="7" rx="1.5" fill="currentColor"/><rect x="4" y="13" width="7" height="7" rx="1.5" fill="currentColor"/><rect x="13" y="13" width="7" height="7" rx="1.5" fill="currentColor"/>"# };
-static EXPAND: rune::Icon = rune::Icon { name: "app-expand", view: 24.0, body: r#"<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"# };
-static CLOSE: rune::Icon = rune::Icon { name: "app-close", view: 24.0, body: r#"<path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" fill="none"/>"# };
-static PLAY: rune::Icon = rune::Icon { name: "app-play", view: 24.0, body: r#"<path d="M7 4.5v15l13-7.5z" fill="currentColor"/>"# };
-static HANG_UP: rune::Icon = rune::Icon { name: "app-hang-up", view: 24.0, body: r#"<path d="M3 14.5c5-5 13-5 18 0l-2.5 3-3-1.5v-2.5c-2-.7-4-.7-6 0V16l-3 1.5z" fill="currentColor"/>"# };
-
-/// The mark beside a server owner's name.
-static CROWN: rune::Icon = rune::Icon {
-    name: "app-crown",
-    view: 256.0,
-    body: r#"<path d="M24 80l56 48 48-80 48 80 56-48-24 120H48z" fill="currentColor" stroke="currentColor" stroke-width="16" stroke-linejoin="round"/>"#,
-};
-
-/// The speech bubble of the direct messages button (Phosphor "chat circle", filled).
-static CHAT_CIRCLE: rune::Icon = rune::Icon {
-    name: "app-chat-circle",
-    view: 256.0,
-    body: r#"<path d="M128,24A104,104,0,0,0,36.18,176.88L24.83,210.93a16,16,0,0,0,20.24,20.24l34.05-11.35A104,104,0,1,0,128,24Z" fill="currentColor"/>"#,
-};
 
 /// Surfaces, darkest to lightest: rail, side panel, chat. Everything else comes from the Rune theme.
 struct Pal { link: Color, rail: Color, side: Color, chat: Color, input: Color, line: Color, select: Color, hover: Color, brand: Color, unread: Color }
@@ -188,9 +161,6 @@ fn guild_icon(s: &State, i: usize, size: f32, r: f32) -> El {
             .child(text(initial(&g.name)).font(type_::TITLE).color(t.knob)),
     }
 }
-
-/// Phosphor's `SpeakerHigh`, filled: a solid cone with the two sound arcs, as the web app's badge draws it.
-static SPEAKER_HIGH: rune::Icon = rune::Icon { name: "app-speaker-high", view: 256.0, body: r#"<path d="M160,32.25V223.69a8.29,8.29,0,0,1-3.91,7.18,8,8,0,0,1-9-.56l-65.57-51A4,4,0,0,1,80,176.16V79.84a4,4,0,0,1,1.55-3.15l65.57-51a8,8,0,0,1,10,.16A8.27,8.27,0,0,1,160,32.25ZM60,80H32A16,16,0,0,0,16,96v64a16,16,0,0,0,16,16H60a4,4,0,0,0,4-4V84A4,4,0,0,0,60,80Zm126.77,20.84a8,8,0,0,0-.72,11.3,24,24,0,0,1,0,31.72,8,8,0,1,0,12,10.58,40,40,0,0,0,0-52.88A8,8,0,0,0,186.74,100.84Zm40.89-26.17a8,8,0,1,0-11.92,10.66,64,64,0,0,1,0,85.34,8,8,0,1,0,11.92,10.66,80,80,0,0,0,0-106.66Z"/>"# };
 
 /// The green call bubble on a server tile while someone is in one of its voice channels: a 20 px
 /// speaker at the top-right corner, cut out of the tile by a 3 px ring of the rail's colour, as
@@ -370,11 +340,6 @@ fn voice_block(s: &State, mut list: El, ch: &Channel, vi: usize) -> El {
 const GREEN: fn() -> Color = || oklch(0.72, 0.17, 150.0);
 const DOCK_USER_H: f32 = 56.0;
 const DOCK_CALL_H: f32 = 108.0;
-
-static WAVEFORM: rune::Icon = rune::Icon { name: "app-waveform", view: 24.0, body: r#"<path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/>"# };
-static SIGNAL: rune::Icon = rune::Icon { name: "app-signal", view: 24.0, body: r#"<path d="M4 4a16 16 0 0 1 16 16M4 10a10 10 0 0 1 10 10M4 16a4 4 0 0 1 4 4" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/>"# };
-static CHEVRON: rune::Icon = rune::Icon { name: "app-chevron", view: 24.0, body: r#"<path d="M9 5l7 7-7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"# };
-static CHECK: rune::Icon = rune::Icon { name: "app-check", view: 24.0, body: r#"<path d="M5 12.5l4.5 4.5L19 7.5" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"# };
 
 /// The floating bar at the bottom left: the voice call (when in one) above the account bar. It
 /// sits over the server rail and the channel list, as in the web app.
@@ -775,8 +740,6 @@ fn attachment(s: &State, a: &Attachment) -> El {
 }
 
 const FOLLOW_WINDOW_MS: i64 = 7 * 60_000;
-
-static ARROW_IN: rune::Icon = rune::Icon { name: "app-arrow-in", view: 24.0, body: r#"<path d="M3 12h15M13 5.5L19.5 12 13 18.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"# };
 
 /// Fluxer's own welcome line ("Welcome, Lion!"), posted by the system account on join.
 fn is_welcome(m: &Msg) -> bool {

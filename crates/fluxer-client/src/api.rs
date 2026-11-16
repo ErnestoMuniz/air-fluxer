@@ -412,7 +412,13 @@ impl Api {
     /// A message with one file attached: `multipart/form-data` with the message as `payload_json`
     /// and the file as `files[0]`, as the web client does when it does not upload ahead of time.
     pub fn send_file(&self, channel_id: &str, content: &str, filename: &str, content_type: &str, data: &[u8], nonce: &str) -> Result<Message, Error> {
-        let (body, boundary) = multipart_body(&json!({ "content": content, "nonce": nonce, "attachments": [{ "id": 0, "filename": filename }] }), filename, content_type, data);
+        self.send_files(channel_id, content, &[(filename, content_type, data)], nonce)
+    }
+
+    /// Sends one message with several files; `files` are (name, media type, bytes).
+    pub fn send_files(&self, channel_id: &str, content: &str, files: &[(&str, &str, &[u8])], nonce: &str) -> Result<Message, Error> {
+        let listed: Vec<Value> = files.iter().enumerate().map(|(i, f)| json!({ "id": i, "filename": f.0 })).collect();
+        let (body, boundary) = multipart_body(&json!({ "content": content, "nonce": nonce, "attachments": listed }), files);
         let url = format!("{}/channels/{channel_id}/messages", self.ep.api_client);
         let mut req = agent().post(&url).header("Accept", "application/json").header("Authorization", &self.token)
             .header("Content-Type", format!("multipart/form-data; boundary={boundary}"));
@@ -436,15 +442,19 @@ impl Api {
     }
 }
 
-/// The body of a one-file message upload and its boundary.
-fn multipart_body(payload: &Value, filename: &str, content_type: &str, data: &[u8]) -> (Vec<u8>, String) {
-    let boundary = format!("----FluxerRux{:x}", data.len() ^ filename.len().rotate_left(7) ^ 0x5bd1e995);
+/// The body of a message upload with files `files[0]`, `files[1]`… and its boundary.
+fn multipart_body(payload: &Value, files: &[(&str, &str, &[u8])]) -> (Vec<u8>, String) {
+    let total: usize = files.iter().map(|f| f.2.len() ^ f.0.len().rotate_left(7)).fold(0, |a, b| a ^ b);
+    let boundary = format!("----FluxerRux{:x}", total ^ 0x5bd1e995);
     let esc = |n: &str| n.replace('\\', "_").replace('"', "_").replace(['\r', '\n'], "_");
-    let mut out = Vec::with_capacity(data.len() + 512);
+    let mut out = Vec::with_capacity(files.iter().map(|f| f.2.len()).sum::<usize>() + 512);
     out.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"payload_json\"\r\nContent-Type: application/json\r\n\r\n{payload}\r\n").as_bytes());
-    out.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"files[0]\"; filename=\"{}\"\r\nContent-Type: {content_type}\r\n\r\n", esc(filename)).as_bytes());
-    out.extend_from_slice(data);
-    out.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    for (i, (filename, content_type, data)) in files.iter().enumerate() {
+        out.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"files[{i}]\"; filename=\"{}\"\r\nContent-Type: {content_type}\r\n\r\n", esc(filename)).as_bytes());
+        out.extend_from_slice(data);
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
     (out, boundary)
 }
 
@@ -462,12 +472,19 @@ mod upload_tests {
 
     #[test]
     fn a_file_message_is_multipart_with_payload_json_and_files_0() {
-        let (body, boundary) = multipart_body(&json!({"content": "hi", "attachments": [{"id": 0, "filename": "a\"b.png"}]}), "a\"b.png", "image/png", &[1, 2, 3]);
+        let (body, boundary) = multipart_body(&json!({"content": "hi", "attachments": [{"id": 0, "filename": "a\"b.png"}]}), &[("a\"b.png", "image/png", &[1, 2, 3][..])]);
         let text = String::from_utf8_lossy(&body);
         assert!(text.starts_with(&format!("--{boundary}\r\n")) && text.ends_with(&format!("--{boundary}--\r\n")));
         assert!(text.contains("name=\"payload_json\""));
         assert!(text.contains("name=\"files[0]\"; filename=\"a_b.png\""), "a quote in a name cannot break the header");
         assert!(body.windows(5).any(|w| w == [b'\r', b'\n', 1, 2, 3]), "the file bytes go in as they are");
+    }
+
+    #[test]
+    fn several_files_are_numbered() {
+        let (body, _) = multipart_body(&json!({}), &[("a.png", "image/png", &[1][..]), ("b.png", "image/png", &[2][..])]);
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("name=\"files[0]\"; filename=\"a.png\"") && text.contains("name=\"files[1]\"; filename=\"b.png\""));
     }
 }
 
