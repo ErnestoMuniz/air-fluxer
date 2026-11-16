@@ -5,19 +5,6 @@ use super::*;
 use crate::picker::{GifView, Tab};
 use crate::{insert_text, send_link, send_sticker};
 
-static PLUS: rune::Icon = rune::Icon { name: "app-plus", view: 24.0, body: r#"<path d="M12 4v16M4 12h16" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/>"# };
-static IMAGE: rune::Icon = rune::Icon { name: "app-image", view: 24.0, body: r#"<rect x="3.5" y="4.5" width="17" height="15" rx="3" stroke="currentColor" stroke-width="2" fill="none"/><circle cx="9" cy="10" r="1.6" fill="currentColor"/><path d="M4.5 17.5l4.5-4.5 3 3 3-3 4.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"# };
-static STICKER: rune::Icon = rune::Icon { name: "app-sticker", view: 24.0, body: r#"<path d="M4 7a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v6.5L13.5 20H7a3 3 0 0 1-3-3z" fill="currentColor"/><path d="M20 13.5h-3.5a3 3 0 0 0-3 3V20" stroke="currentColor" stroke-width="2" stroke-linejoin="round" fill="none" opacity=".5"/>"# };
-static SMILE: rune::Icon = rune::Icon { name: "app-smile", view: 24.0, body: r#"<circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="2" fill="none"/><circle cx="9" cy="10" r="1.3" fill="currentColor"/><circle cx="15" cy="10" r="1.3" fill="currentColor"/><path d="M8.5 14c1 1.8 5.9 1.8 7 0" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>"# };
-static SAD: rune::Icon = rune::Icon { name: "app-sad", view: 24.0, body: r#"<circle cx="12" cy="12" r="9.5" stroke="currentColor" stroke-width="2" fill="none"/><circle cx="8.8" cy="10" r="1.3" fill="currentColor"/><circle cx="15.2" cy="10" r="1.3" fill="currentColor"/><path d="M8 16.5c1.2-1.8 6.8-1.8 8 0" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>"# };
-static SEARCH: rune::Icon = rune::Icon { name: "app-search", view: 24.0, body: r#"<circle cx="10.5" cy="10.5" r="6.5" stroke="currentColor" stroke-width="2.2" fill="none"/><path d="M15.5 15.5L20 20" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>"# };
-static PAPERCLIP: rune::Icon = rune::Icon { name: "app-paperclip", view: 24.0, body: r#"<path d="M19 11.5l-7 7a4.5 4.5 0 0 1-6.4-6.4l8-8a3 3 0 0 1 4.3 4.3l-8 8a1.5 1.5 0 0 1-2.1-2.1l6.5-6.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"# };
-static ARROW_LEFT: rune::Icon = rune::Icon { name: "app-arrow-left", view: 24.0, body: r#"<path d="M19 12H5M11 6l-6 6 6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"# };
-static SEND: rune::Icon = rune::Icon { name: "app-send", view: 24.0, body: r#"<path d="M3 11.5L21 3l-6.5 18-3-7.5z" fill="currentColor"/>"# };
-static REPLY: rune::Icon = rune::Icon { name: "app-reply", view: 24.0, body: r#"<path d="M10 6L4 12l6 6M4 12h9a7 7 0 0 1 7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"# };
-static PENCIL: rune::Icon = rune::Icon { name: "app-pencil", view: 24.0, body: r#"<path d="M4 20.1l4.4-1.1L19.6 7.8a2.2 2.2 0 0 0-3.1-3.1L5.3 15.9z" fill="currentColor"/><path d="M14.6 6.5l3.1 3.1" stroke="currentColor" stroke-width="1.7" fill="none"/>"# };
-static X: rune::Icon = rune::Icon { name: "app-x", view: 24.0, body: r#"<path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" fill="none"/>"# };
-
 const PICKER_W: f32 = 440.0;
 const PICKER_H: f32 = 520.0;
 const MENU_FILL: fn() -> Color = || oklch(0.22, 0.008, 265.0);
@@ -64,6 +51,7 @@ pub fn composer(s: &State) -> El {
             .placeholder(place, t.text_secondary)
             .on_edit(|s: &mut State| &mut s.draft)
             .on_submit(|s: &mut State, tx| { send(s); tx.focus("composer", false) })
+            .on_input_paste(|s: &mut State, content, _| crate::attach::paste(s, content))
             .grow(1.0).min_w(0.0).px(8.0).py(12.0))
         .child(btn("btn-gifs", Tab::Gifs, prefs.gifs_button, gif_icon))
         .child(btn("btn-media", Tab::Media, prefs.media_button, rune::icon(&IMAGE, 22.0).color(tint(s.picker.open == Some(Tab::Media)))))
@@ -71,10 +59,10 @@ pub fn composer(s: &State) -> El {
         .child(btn("btn-emoji", Tab::Emojis, prefs.emoji_button, rune::icon(&SMILE, 22.0).color(tint(s.picker.open == Some(Tab::Emojis)))));
     if prefs.send_button {
         bar = bar.child(row().key("btn-send").size(34.0, 34.0).radius(radius::SM).center().hover(p.select)
-            .child(rune::icon(&SEND, 20.0).color(tint(!s.draft.text.trim().is_empty())))
+            .child(rune::icon(&SEND, 20.0).color(tint(!s.draft.text.trim().is_empty() || !s.attachments.is_empty())))
             .cursor(rune::Cursor::Pointer).on_press_tx(|s: &mut State, tx: &mut rune::Tx| { send(s); tx.focus("composer", false) }));
     }
-    col().px(16.0).py(PAD_Y).child(super::typing_bar(s)).child(draft_bar(s)).child(bar)
+    col().px(16.0).py(PAD_Y).child(super::typing_bar(s)).child(draft_bar(s)).child(attachment_strip(s)).child(bar)
 }
 
 /// Over the box while answering or editing a message: who/what, a peek at the text, and a way out.
@@ -97,6 +85,26 @@ fn draft_bar(s: &State) -> El {
                 s.draft_mode.reply = None;
                 if s.draft_mode.editing.take().is_some() { s.draft.clear() }
             }))
+}
+
+/// What waits to be sent with the next message: a picture tile (or a file chip) for each, with a button that drops it.
+fn attachment_strip(s: &State) -> El {
+    if s.attachments.is_empty() { return el().size(0.0, 0.0) }
+    let (p, t) = (pal(), crate::appearance::theme());
+    let mut strip = row().gap(8.0).px(4.0).py(6.0).items_start();
+    for (i, a) in s.attachments.iter().enumerate() {
+        let body = match &a.thumb {
+            Some(px) => el().size(72.0, 72.0).radius(8.0).fill(p.input).pixels(px),
+            None => col().size(72.0, 72.0).radius(8.0).fill(p.input).border(1.0, p.line).center().px(6.0)
+                .child(rune::icon(&PAPERCLIP, 20.0).color(t.text_secondary))
+                .child(text(a.name.clone()).font(type_::LABEL).color(t.text_secondary).w(60.0)),
+        };
+        let x = row().key(format!("att-x-{i}")).absolute(54.0, 2.0).size(18.0, 18.0).radius(9.0).center().fill(oklcha(0.0, 0.0, 0.0, 0.7)).hover(oklcha(0.0, 0.0, 0.0, 0.9))
+            .child(rune::icon(&CLOSE, 10.0).color(t.text)).cursor(rune::Cursor::Pointer)
+            .on_press(move |s: &mut State| { if i < s.attachments.len() { s.attachments.remove(i); } });
+        strip = strip.child(el().key(format!("att-{i}")).size(72.0, 72.0).child(body).child(x));
+    }
+    strip
 }
 
 /// Popups and the layer that closes them; added at the root so they draw above everything.

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 /// Largest media download we accept.
 const MAX_MEDIA_BYTES: u64 = 12 * 1024 * 1024;
 /// Largest file we upload (the server may allow less).
-const MAX_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
+pub const MAX_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
 const MAX_IN_FLIGHT_IMAGES: usize = 24;
 /// Decoded pictures nothing asks for any more are kept (so going back is instant) up to this much.
 const COLD_BUDGET: usize = 64 << 20;
@@ -336,6 +336,17 @@ impl Net {
             let data = std::fs::read(&path).map_err(|e| format!("não foi possível ler o arquivo: {e}"))?;
             let name = path.file_name().map_or("file".to_string(), |n| n.to_string_lossy().to_string());
             api.send_file(&c, &text, &name, content_type_of(&name), &data, &nonce).map(|_| ()).map_err(|e| e.message)
+        }, Done::Posted);
+    }
+
+    /// Uploads files already in memory as one message with `content` (off-thread).
+    pub fn send_files(&self, channel: &str, content: &str, files: Vec<crate::attach::Outgoing>) {
+        let Some(api) = self.api.clone() else { return };
+        let (c, text) = (channel.to_string(), content.to_string());
+        let nonce = crate::clock::now_ms().to_string();
+        self.job(move || {
+            let list: Vec<(&str, &str, &[u8])> = files.iter().map(|f| (f.name.as_str(), f.content_type.as_str(), &f.data[..])).collect();
+            api.send_files(&c, &text, &list, &nonce).map(|_| ()).map_err(|e| e.message)
         }, Done::Posted);
     }
 
