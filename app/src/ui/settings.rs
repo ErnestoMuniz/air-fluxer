@@ -21,21 +21,21 @@ static BUBBLE: rune::Icon = rune::Icon { name: "app-set-bubble", view: 24.0, bod
 // ---------------------------------------------------------------- palette
 
 fn hx(s: &str) -> Color { rune::color::hex(s).unwrap_or(Color::BLACK) }
-fn panel() -> Color { hx("#1A181E") }
-fn sidebar_bg() -> Color { hx("#2A2730") }
-fn field_bg() -> Color { hx("#2A2730") }
-fn ink() -> Color { hx("#E0E0E2") }
-fn dim() -> Color { hx("#9C98A5") }
+fn panel() -> Color { match crate::appearance::mode() { crate::appearance::LIGHT => hx("#F4F4F6"), crate::appearance::MIDNIGHT => hx("#000000"), _ => hx("#1A181E") } }
+fn sidebar_bg() -> Color { match crate::appearance::mode() { crate::appearance::LIGHT => hx("#E9E9ED"), crate::appearance::MIDNIGHT => hx("#000000"), _ => hx("#2A2730") } }
+fn field_bg() -> Color { match crate::appearance::mode() { crate::appearance::LIGHT => hx("#FFFFFF"), crate::appearance::MIDNIGHT => hx("#0B0B0B"), _ => hx("#2A2730") } }
+fn ink() -> Color { match crate::appearance::mode() { crate::appearance::LIGHT => hx("#1B1B21"), crate::appearance::MIDNIGHT => hx("#F2F2F2"), _ => hx("#E0E0E2") } }
+fn dim() -> Color { match crate::appearance::mode() { crate::appearance::LIGHT => hx("#64646E"), crate::appearance::MIDNIGHT => hx("#8A8A8A"), _ => hx("#9C98A5") } }
 fn accent() -> Color { hx("#413CDD") }
 fn banner() -> Color { hx("#5F3C30") }
-fn card_bg() -> Color { hx("#0C0B0E") }
-fn line() -> Color { hx("#34313C") }
-fn hover() -> Color { hx("#332F3B") }
-fn pressed_row() -> Color { hx("#403D45") }
+fn card_bg() -> Color { match crate::appearance::mode() { crate::appearance::LIGHT => hx("#FFFFFF"), crate::appearance::MIDNIGHT => hx("#050505"), _ => hx("#0C0B0E") } }
+fn line() -> Color { match crate::appearance::mode() { crate::appearance::LIGHT => hx("#D6D6DE"), crate::appearance::MIDNIGHT => hx("#161616"), _ => hx("#34313C") } }
+fn hover() -> Color { match crate::appearance::mode() { crate::appearance::LIGHT => hx("#E2E2E7"), crate::appearance::MIDNIGHT => hx("#121212"), _ => hx("#332F3B") } }
+fn pressed_row() -> Color { match crate::appearance::mode() { crate::appearance::LIGHT => hx("#D5D5DD"), crate::appearance::MIDNIGHT => hx("#1A1A1A"), _ => hx("#403D45") } }
 
 /// The kit for the form fields: the page's own greys instead of the theme's.
 fn fields() -> Kit {
-    let mut k = Kit::neutral(true);
+    let mut k = Kit::neutral(!crate::appearance::dark());
     k.c.bg_base = field_bg();
     k.c.border_base = hx("#3A3642");
     k.c.border_focus = accent();
@@ -66,6 +66,7 @@ pub enum Page {
     #[default]
     Profile,
     Voice,
+    Appearance,
 }
 
 /// What the profile page keeps besides the text fields (`State::prof`).
@@ -399,7 +400,7 @@ fn color_picker(s: &State) -> El {
             set_hsv(s, ((d.x / d.w.max(1.0)).clamp(0.0, 1.0) * 360.0, sat, v))
         });
     col().key("color-picker").w(W + 36.0).px(18.0).py(18.0).gap(16.0).radius(10.0).fill(hx("#0C0B0E")).border(1.0, line())
-        .shadow(6.0, 24.0, tok::theme(true).shadow).on_press(|_: &mut State| {})
+        .shadow(6.0, 24.0, crate::appearance::theme().shadow).on_press(|_: &mut State| {})
         .child(square).child(bar)
         .child(row().key("cp-reset").h(28.0).center().radius(radius::SM).hover(hover())
             .child(text("Reset").font(title(14.0, 400.0)).color(dim())).cursor(rune::Cursor::Pointer)
@@ -423,7 +424,7 @@ fn type_menu(s: &State) -> El {
         list = list.child(row_of(format!("pt-{i}"), s.pf.kind == Some(i), guild_icon(s, i, 28.0, 14.0), g.name.clone(), Some(i)));
     }
     col().key("type-menu").w(730.0).max_h(360.0).radius(radius::MD).fill(sidebar_bg()).border(1.0, hx("#3A3642"))
-        .shadow(6.0, 24.0, tok::theme(true).shadow).on_press(|_: &mut State| {})
+        .shadow(6.0, 24.0, crate::appearance::theme().shadow).on_press(|_: &mut State| {})
         .child(list.scroll(ScrollSpec { stick_bottom: false }))
         .anchored("pf-type", rune::Side::Bottom, rune::Align::Start, 4.0)
 }
@@ -587,8 +588,36 @@ fn device_list(prefix: &str, devices: Option<&Vec<crate::audio::Device>>, chosen
     list
 }
 
-fn choose_mic(s: &mut State, id: Option<String>) { s.call.set_mic(id) }
-fn choose_speaker(s: &mut State, id: Option<String>) { s.call.set_speaker(id) }
+/// The appearance page: light, dark and Midnight (pure black).
+fn appearance_page(s: &State) -> El {
+    let hint = |words: &str| text(words.to_string()).font(title(12.5, 400.0)).color(dim()).wrap().w_full();
+    let card = |mode: u8, name: &'static str, desc: &'static str| {
+        let on = s.prefs.appearance == mode;
+        col().key(format!("appearance-{mode}")).w_full().px(16.0).py(14.0).gap(4.0).radius(radius::MD)
+            .fill(if on { pressed_row() } else { field_bg() })
+            .border(2.0, if on { accent() } else { line() })
+            .child(text(name.to_string()).font(title(15.0, 600.0)).color(ink()))
+            .child(hint(desc))
+            .cursor(rune::Cursor::Pointer)
+            .on_press(move |s: &mut State| {
+                s.prefs.appearance = mode;
+                crate::prefs::save(&s.prefs);
+                crate::appearance::set(mode);
+            })
+    };
+    let inner = col().w_full().max_w(730.0).gap(10.0)
+        .child(section_head("Appearance"))
+        .child(hint("Choose how Fluxer looks on this computer. It applies at once and is remembered."))
+        .child(row().h(8.0))
+        .child(card(0, "Dark", "The default grey-dark interface."))
+        .child(card(1, "Light", "Light surfaces with dark text."))
+        .child(card(2, "Midnight", "Pure black everywhere, with only the essential highlights."));
+    col().w_full().py(16.0)
+        .child(row().w_full().justify_center().px(16.0).child(inner))
+        .scroll(ScrollSpec { stick_bottom: false }).grow(1.0).min_h(0.0)
+}
+
+fn choose_mic(s: &mut State, id: Option<String>) { s.call.set_mic(id) }fn choose_speaker(s: &mut State, id: Option<String>) { s.call.set_speaker(id) }
 
 fn voice_page(s: &State) -> El {
     let cfg = &s.call.settings;
@@ -835,6 +864,10 @@ pub fn dialog(s: &State) -> El {
             s.pf.emoji_open = false;
             s.call.refresh_devices();
             s.call.meter(true);
+        }))
+        .child(nav_row("set-page-appearance", "Appearance", &EYEDROP, s.pf.page == Page::Appearance, |s| {
+            s.pf.page = Page::Appearance;
+            s.call.meter(false);
         }));
     let side = col().w(320.0).h_full().fill(sidebar_bg())
         .child(side_body.scroll(ScrollSpec { stick_bottom: false }).grow(1.0).min_h(0.0))
@@ -854,6 +887,7 @@ pub fn dialog(s: &State) -> El {
         let (heading, icon) = match s.pf.page {
             Page::Profile => ("Profile", &LINK),
             Page::Voice => ("Voice & audio", &MIC),
+            Page::Appearance => ("Appearance", &EYEDROP),
         };
         row().h(70.0).px(16.0).center_y().gap(8.0)
             .child(text(heading).font(title(20.0, 600.0)).color(ink()))
@@ -868,10 +902,11 @@ pub fn dialog(s: &State) -> El {
     let page = match s.pf.page {
         Page::Profile => profile_page(s, &me, &k),
         Page::Voice => voice_page(s),
+        Page::Appearance => appearance_page(s),
     };
 
     let card = row().key("settings-card").w_full().h_full().max_w(1400.0).radius(radius::LG).fill(panel())
-        .border(1.0, hx("#2E2B35")).shadow(8.0, 32.0, tok::theme(true).shadow).clip_rounded(radius::LG)
+        .border(1.0, hx("#2E2B35")).shadow(8.0, 32.0, crate::appearance::theme().shadow).clip_rounded(radius::LG)
         .on_press(|_: &mut State| {})
         .child(side)
         .child(col().grow(1.0).h_full().min_w(0.0).child(top).child(page));

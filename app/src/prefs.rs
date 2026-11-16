@@ -15,10 +15,12 @@ pub struct Prefs {
     pub members_w: u32,
     /// The status this account shows at launch (online/idle/dnd/invisible).
     pub status: String,
+    /// 0 dark, 1 light, 2 Midnight (see `appearance`).
+    pub appearance: u8,
 }
 
 impl Default for Prefs {
-    fn default() -> Self { Prefs { gifs_button: true, media_button: true, stickers_button: true, emoji_button: true, send_button: false, list_w: 248, members_w: 240, status: "online".into() } }
+    fn default() -> Self { Prefs { gifs_button: true, media_button: true, stickers_button: true, emoji_button: true, send_button: false, list_w: 248, members_w: 240, status: "online".into(), appearance: 0 } }
 }
 
 fn file() -> Option<std::path::PathBuf> { Some(crate::store::dir()?.join("prefs.json")) }

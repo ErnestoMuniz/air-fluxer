@@ -34,7 +34,7 @@ pub const BOX_H: f32 = 56.0;
 pub const PAD_Y: f32 = 8.0;
 
 pub fn composer(s: &State) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let prefs = &s.prefs;
     let place = match (s.chat.nav.guild.is_some(), s.chat.channel()) {
         (true, Some(c)) => format!("Message #{}", c.name),
@@ -79,7 +79,7 @@ pub fn composer(s: &State) -> El {
 
 /// Over the box while answering or editing a message: who/what, a peek at the text, and a way out.
 fn draft_bar(s: &State) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let (label, peek, editing) = if let Some(r) = &s.draft_mode.reply {
         (format!("Replying to {}", r.author.display()), r.content.clone(), false)
     } else if s.draft_mode.editing.is_some() {
@@ -119,7 +119,7 @@ pub fn layers(s: &State) -> Vec<El> {
 
 /// The bar that floats over a message under the pointer: three quick reactions and the emoji picker.
 pub fn reaction_bar(id: &str) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let quick = |glyph: &'static str| {
         let id = id.to_string();
         row().key(format!("rxq-{id}-{glyph}")).size(30.0, 30.0).radius(radius::SM).center().hover(p.select)
@@ -139,11 +139,11 @@ pub fn reaction_bar(id: &str) -> El {
 
 fn menu_card(key: &str) -> El {
     // A press on the card itself (not on an item) is taken here, so it does not fall through to the layer that closes the popup.
-    col().key(key.to_string()).radius(10.0).fill(MENU_FILL()).border(1.0, pal().line).shadow(6.0, 24.0, tok::theme(true).shadow).on_press(|_: &mut State| {})
+    col().key(key.to_string()).radius(10.0).fill(MENU_FILL()).border(1.0, pal().line).shadow(6.0, 24.0, crate::appearance::theme().shadow).on_press(|_: &mut State| {})
 }
 
 fn plus_menu(s: &State) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let item = |key: &str, label: &str, icon: &'static rune::Icon, on: bool| row().key(key.to_string()).h(38.0).px(12.0).gap(8.0).center_y().radius(radius::SM)
         .fill(if on { p.select } else { clear() }).hover(p.select)
         .child(text(label.to_string()).font(type_::BODY).color(t.text).grow(1.0))
@@ -155,7 +155,7 @@ fn plus_menu(s: &State) -> El {
 }
 
 fn customize_menu(s: &State) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let prefs = &s.prefs;
     let check = |key: &str, label: &str, on: bool, f: fn(&mut crate::prefs::Prefs)| row().key(key.to_string()).h(34.0).px(12.0).center_y().radius(radius::SM).hover(p.select)
         .child(text(label.to_string()).font(type_::BODY).color(t.text).grow(1.0))
@@ -173,7 +173,7 @@ fn customize_menu(s: &State) -> El {
 }
 
 fn picker(s: &State, tab: Tab) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let pill = |key: &str, label: &str, me: Tab| row().key(key.to_string()).h(28.0).px(10.0).radius(radius::SM).center()
         .fill(if tab == me { p.select } else { clear() }).hover(p.select)
         .child(text(label.to_string()).font(rune::tok::TextStyle::new(13.0, 700.0)).color(if tab == me { t.text } else { t.text_secondary }))
@@ -195,7 +195,7 @@ fn picker(s: &State, tab: Tab) -> El {
 }
 
 fn search_box(s: &State, placeholder: &str, on_submit: fn(&mut State)) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     row().h(40.0).mx(12.0).px(12.0).gap(8.0).center_y().radius(8.0).fill(p.input).border(1.0, p.line)
         .child(rune::icon(&SEARCH, 16.0).color(t.text_secondary))
         .child(text_input(&s.picker.query, type_::BODY).key("picker-search").placeholder(placeholder.to_string(), t.text_secondary)
@@ -203,7 +203,7 @@ fn search_box(s: &State, placeholder: &str, on_submit: fn(&mut State)) -> El {
 }
 
 fn empty_state(icon: &'static rune::Icon, title: &str, sub: &str) -> El {
-    let t = tok::theme(true);
+    let t = crate::appearance::theme();
     col().grow(1.0).w_full().center().gap(8.0).px(40.0)
         .child(rune::icon(icon, 40.0).color(t.text_secondary))
         .child(text(title.to_string()).font(rune::tok::TextStyle::new(17.0, 700.0)).color(t.text))
@@ -211,7 +211,7 @@ fn empty_state(icon: &'static rune::Icon, title: &str, sub: &str) -> El {
 }
 
 fn status_line(s: &State) -> Option<El> {
-    let t = tok::theme(true);
+    let t = crate::appearance::theme();
     if s.picker.loading { return Some(row().w_full().h(40.0).center().child(text("Loading…").font(type_::LABEL).color(t.text_secondary))) }
     s.picker.error.as_ref().map(|e| row().w_full().px(16.0).py(10.0).child(text(e.clone()).font(type_::LABEL).color(pal().unread).wrap().w(PICKER_W - 32.0)))
 }
@@ -236,7 +236,7 @@ fn tile(s: &State, key: String, url: &str, anim: Option<&str>, w: f32, h: f32, l
     if let Some(img) = playing.or(still) { e = e.pixels(&img.pixels) }
     if let Some(l) = label {
         e = e.child(el().absolute(0.0, 0.0).size(w, h).radius(8.0).fill(oklcha(0.0, 0.0, 0.0, 0.42)))
-            .child(row().absolute(0.0, 0.0).size(w, h).center().child(text(l.to_string()).font(rune::tok::TextStyle::new(16.0, 800.0)).color(tok::theme(true).text)));
+            .child(row().absolute(0.0, 0.0).size(w, h).center().child(text(l.to_string()).font(rune::tok::TextStyle::new(16.0, 800.0)).color(crate::appearance::theme().text)));
     }
     e
 }
@@ -252,7 +252,7 @@ fn masonry(items: Vec<El>, heights: Vec<f32>) -> El {
 }
 
 fn gifs_body(s: &State) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let pk = &s.picker;
     let w = (PICKER_W - 12.0 * 2.0 - 8.0) / 2.0;
     let search = search_box(s, "Search Klipy", |s| { let (q, api) = (s.picker.query.text.clone(), s.net.api().cloned()); s.picker.search(&q, &api); crate::picker_images(s) });
@@ -298,7 +298,7 @@ fn gifs_body(s: &State) -> El {
 }
 
 fn media_body(s: &State) -> El {
-    let t = tok::theme(true);
+    let t = crate::appearance::theme();
     let w = (PICKER_W - 12.0 * 2.0 - 8.0) / 2.0;
     let memes = s.picker.memes.as_deref().unwrap_or(&[]);
     if memes.is_empty() {
@@ -335,7 +335,7 @@ fn stickers_body(s: &State) -> El {
 }
 
 fn emojis_body(s: &State, pick: fn(&mut State, &'static str)) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let groups = crate::picker::emoji_groups();
     let g = s.picker.emoji_group.min(groups.len() - 1);
     let q = s.picker.query.text.clone();

@@ -25,7 +25,7 @@ fn best_fit(n: usize, w: f32, h: f32) -> (usize, f32) {
 enum Kind { Person, Stream }
 
 pub fn view(s: &State, size: Option<[f32; 2]>) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let people = s.call.channel_id.as_deref().and_then(|id| s.chat.voice.get(id));
     let sorted = sorted_voice(s, people);
     // Screen shares come first, then everyone.
@@ -109,7 +109,7 @@ fn tile(s: &State, kind: Kind, v: &VState, all: &[&VState], small: bool) -> El {
 
 /// A pill over the corner of a tile: the name, with what is off beside it.
 fn name_pill(s: &State, v: &VState, suffix: &str, small: bool) -> El {
-    let t = tok::theme(true);
+    let t = crate::appearance::theme();
     let user = s.chat.roster.users.get(&v.user_id);
     let name = user.map_or("…".to_string(), |u| name_in(s, u));
     let mut pill = row().h(if small { 20.0 } else { 24.0 }).px(8.0).gap(6.0).radius(6.0).center_y().fill(oklcha(0.0, 0.0, 0.0, 0.6));
@@ -141,7 +141,7 @@ fn person_tile(s: &State, v: &VState, small: bool) -> El {
 }
 
 fn stream_tile(s: &State, v: &VState, all: &[&VState], small: bool) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let conn = v.connection_id.clone();
     let key = s.call.stream_key(&conn).unwrap_or_default();
     let watching = s.call.is_watching(&conn);

@@ -67,17 +67,25 @@ static CHAT_CIRCLE: rune::Icon = rune::Icon {
 struct Pal { link: Color, rail: Color, side: Color, chat: Color, input: Color, line: Color, select: Color, hover: Color, brand: Color, unread: Color }
 
 fn pal() -> Pal {
-    Pal {
-        link: oklch(0.74, 0.14, 245.0),
-        rail: oklch(0.155, 0.006, 265.0),
-        side: oklch(0.19, 0.006, 265.0),
-        chat: oklch(0.225, 0.006, 265.0),
-        input: oklch(0.275, 0.008, 265.0),
-        line: oklcha(1.0, 0.0, 0.0, 0.07),
-        select: oklcha(1.0, 0.0, 0.0, 0.055),
-        hover: oklcha(1.0, 0.0, 0.0, 0.03),
-        brand: tok::accent(0, true),
-        unread: oklch(0.64, 0.2, 25.0),
+    match crate::appearance::mode() {
+        crate::appearance::LIGHT => Pal {
+            link: oklch(0.55, 0.17, 245.0), rail: oklch(0.905, 0.004, 265.0), side: oklch(0.945, 0.004, 265.0),
+            chat: oklch(0.985, 0.002, 265.0), input: oklch(1.0, 0.0, 0.0),
+            line: oklcha(0.0, 0.0, 0.0, 0.09), select: oklcha(0.0, 0.0, 0.0, 0.055), hover: oklcha(0.0, 0.0, 0.0, 0.035),
+            brand: crate::appearance::accent(0), unread: oklch(0.58, 0.2, 25.0),
+        },
+        crate::appearance::MIDNIGHT => Pal {
+            link: oklch(0.78, 0.14, 245.0), rail: oklch(0.0, 0.0, 0.0), side: oklch(0.0, 0.0, 0.0),
+            chat: oklch(0.0, 0.0, 0.0), input: oklch(0.055, 0.0, 0.0),
+            line: oklcha(1.0, 0.0, 0.0, 0.06), select: oklcha(1.0, 0.0, 0.0, 0.05), hover: oklcha(1.0, 0.0, 0.0, 0.025),
+            brand: crate::appearance::accent(0), unread: oklch(0.64, 0.2, 25.0),
+        },
+        _ => Pal {
+            link: oklch(0.74, 0.14, 245.0), rail: oklch(0.155, 0.006, 265.0), side: oklch(0.19, 0.006, 265.0),
+            chat: oklch(0.225, 0.006, 265.0), input: oklch(0.275, 0.008, 265.0),
+            line: oklcha(1.0, 0.0, 0.0, 0.07), select: oklcha(1.0, 0.0, 0.0, 0.055), hover: oklcha(1.0, 0.0, 0.0, 0.03),
+            brand: crate::appearance::accent(0), unread: oklch(0.64, 0.2, 25.0),
+        },
     }
 }
 const ATTACHMENT_MAX: (f32, f32) = (360.0, 280.0);
@@ -87,8 +95,8 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
 }
 
 fn login_view(s: &State) -> El {
-    let t = tok::theme(true);
-    let k = &Kit::neutral(true);
+    let t = crate::appearance::theme();
+    let k = &Kit::neutral(!crate::appearance::dark());
     let a = &s.auth;
     const W: f32 = 430.0;
     let panel = oklch(0.2, 0.01, 300.0);
@@ -105,7 +113,7 @@ fn login_view(s: &State) -> El {
             .child(title("Check your email"))
             .child(text(format!("We sent an authorization link to {email}. Once you authorize it, Fluxer signs you in automatically."))
                 .key("ip-waiting").font(type_::BODY).color(t.text_secondary).wrap().w(W))
-            .child(text("Waiting for authorization…").font(type_::LABEL).color(tok::accent(0, true)));
+            .child(text("Waiting for authorization…").font(type_::LABEL).color(crate::appearance::accent(0)));
     } else if in_code_step {
         form = form
             .child(title("Two-factor authentication"))
@@ -168,7 +176,7 @@ fn initial(name: &str) -> String { name.chars().next().map_or("?".into(), |c| c.
 
 /// A round avatar: the downloaded picture, or a tinted circle with the initial until it arrives.
 fn avatar(s: &State, user: &User, size: f32) -> El {
-    let t = tok::theme(true);
+    let t = crate::appearance::theme();
     let img = s.chat.media.as_deref().and_then(|m| api::avatar_url(m, user, 128)).and_then(|u| s.net.image(&u).cloned());
     // Nobody without a picture of their own: the Fluxer logo, like the web app's default avatar.
     let img = img.or_else(|| if user.avatar.is_none() { s.net.logo().cloned() } else { None });
@@ -180,7 +188,7 @@ fn avatar(s: &State, user: &User, size: f32) -> El {
 }
 
 fn guild_icon(s: &State, i: usize, size: f32, r: f32) -> El {
-    let t = tok::theme(true);
+    let t = crate::appearance::theme();
     let g = &s.chat.guilds[i];
     let img = s.chat.media.as_deref().zip(g.icon.as_deref())
         .map(|(m, h)| api::guild_icon_url(m, &g.id, h, 128)).and_then(|u| s.net.image(&u).cloned());
@@ -201,18 +209,18 @@ fn call_badge(in_call: bool) -> El {
     if !in_call { return el().size(0.0, 0.0) }
     row().size(26.0, 26.0).radius(13.0).fill(pal().rail).center()
         .child(row().size(20.0, 20.0).radius(10.0).fill(oklch(0.666, 0.154, 156.0)).center()
-            .child(rune::icon(&SPEAKER_HIGH, 12.0).color(tok::theme(true).knob)))
+            .child(rune::icon(&SPEAKER_HIGH, 12.0).color(crate::appearance::theme().knob)))
 }
 
 fn badge(n: u32) -> El {
     if n == 0 { return el().size(0.0, 0.0) }
     let p = pal();
     row().h(18.0).px(5.0).radius(9.0).fill(p.unread).border(2.0, p.rail).center()
-        .child(text(if n > 99 { "99+".into() } else { n.to_string() }).font(type_::LABEL).color(tok::theme(true).knob))
+        .child(text(if n > 99 { "99+".into() } else { n.to_string() }).font(type_::LABEL).color(crate::appearance::theme().knob))
 }
 
 fn guild_rail(s: &State) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let nav = s.chat.nav;
     let tile = |key: String, selected: bool, unread: u32, new: bool, in_call: bool, body: El, on: Box<dyn Fn(&mut State)>| {
         let hovered = s.rail_hover.as_deref() == Some(key.as_str());
@@ -251,7 +259,7 @@ fn guild_rail(s: &State) -> El {
 }
 
 fn channel_row(s: &State, i: usize, ch: &Channel) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let active = s.chat.voice_view.is_none() && i == s.chat.nav.channel;
     let lead = match &ch.peer {
         Some(u) => {
@@ -274,11 +282,11 @@ fn channel_row(s: &State, i: usize, ch: &Channel) -> El {
 fn badge_on(n: u32, surface: Color) -> El {
     if n == 0 { return el().size(0.0, 0.0) }
     row().h(18.0).px(6.0).radius(9.0).fill(pal().unread).border(0.0, surface).center()
-        .child(text(if n > 99 { "99+".into() } else { n.to_string() }).font(type_::LABEL).color(tok::theme(true).knob))
+        .child(text(if n > 99 { "99+".into() } else { n.to_string() }).font(type_::LABEL).color(crate::appearance::theme().knob))
 }
 
 fn channel_list(s: &State) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let (title, sub) = match s.chat.nav.guild.and_then(|g| s.chat.guilds.get(g)) {
         Some(g) => (g.name.clone(), "CANAIS"),
         None => ("Mensagens diretas".to_string(), "CONVERSAS"),
@@ -314,7 +322,7 @@ fn channel_list(s: &State) -> El {
             let pic = match img { Some(i) => pic.pixels(&i.pixels), None => pic.fill(p.rail) };
             col().w(list_w(s)).h(banner_h(s)).child(pic.child(el().absolute(0.0, 0.0).w(list_w(s)).h(banner_h(s) * 0.4)
                 .linear_gradient(std::f32::consts::PI, [(0.0, oklcha(0.0, 0.0, 0.0, 0.55)), (1.0, oklcha(0.0, 0.0, 0.0, 0.0))]))
-                .child(el().absolute(16.0, 14.0).child(text(title).font(type_::TITLE).color(rune::tok::theme(true).knob))))
+                .child(el().absolute(16.0, 14.0).child(text(title).font(type_::TITLE).color(crate::appearance::theme().knob))))
         }
         None => col().child(row().h(48.0).px(16.0).center_y().child(text(title).font(type_::TITLE).color(t.text)))
             .child(el().w_full().h(1.0).fill(p.line)),
@@ -337,7 +345,7 @@ fn sorted_voice<'a>(s: &State, people: Option<&'a Vec<crate::model::VState>>) ->
 
 /// A voice channel and the people in it.
 fn voice_block(s: &State, mut list: El, ch: &Channel, vi: usize) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let here = s.call.channel_id.as_deref() == Some(ch.id.as_str());
     let id = ch.id.clone();
     let chat_open = s.chat.voice_view == Some(vi);
@@ -390,7 +398,7 @@ static CHECK: rune::Icon = rune::Icon { name: "app-check", view: 24.0, body: r#"
 /// The floating bar at the bottom left: the voice call (when in one) above the account bar. It
 /// sits over the server rail and the channel list, as in the web app.
 fn dock(s: &State) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let Some(u) = s.chat.me.as_ref() else { return el().size(0.0, 0.0) };
     let clear = oklcha(0.0, 0.0, 0.0, 0.0);
     let c = &s.call;
@@ -469,7 +477,7 @@ fn dock(s: &State) -> El {
 /// The status picker above the account bar.
 fn status_menu(s: &State) -> El {
     if !s.status_menu { return el().size(0.0, 0.0) }
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let item = |value: &'static str, label: &'static str| row().key(format!("st-{value}")).h(32.0).px(10.0).gap(8.0).center_y()
         .radius(radius::SM).hover(p.hover)
         .child(el().size(9.0, 9.0).radius(4.5).fill(status_color(value)))
@@ -492,7 +500,7 @@ fn status_scrim(s: &State) -> El {
 /// The small card that explains the voice signal icon: the room's round-trip time.
 fn ping_tip(s: &State) -> El {
     if !s.call.ping_tip || !s.call.active() { return el().size(0.0, 0.0) }
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let (label, color) = match s.call.ping {
         Some(ms) if ms < 80 => (format!("Ping {ms} ms"), GREEN()),
         Some(ms) if ms < 160 => (format!("Ping {ms} ms"), oklch(0.78, 0.16, 80.0)),
@@ -507,7 +515,7 @@ fn ping_tip(s: &State) -> El {
 
 /// A horizontal slider, 0..=1: drag or click anywhere on it.
 fn slider(key: &str, value: f32, set: fn(&mut State, f32)) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     const W: f32 = 238.0;
     let v = value.clamp(0.0, 1.0);
     el().key(key.to_string()).w(W).h(22.0)
@@ -519,7 +527,7 @@ fn slider(key: &str, value: f32, set: fn(&mut State, f32)) -> El {
 
 /// The audio menu: devices, profile, volumes, the microphone level and deafening.
 fn audio_menu(s: &State) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     if !s.call.menu_open { return el().size(0.0, 0.0) }
     let clear = oklcha(0.0, 0.0, 0.0, 0.0);
     let cfg = &s.call.settings;
@@ -592,7 +600,7 @@ fn audio_menu(s: &State) -> El {
 
 /// The menu of a person (right click): mention, message, how loud they are for me, mute for me, copy id.
 fn user_menu(s: &State) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let Some(c) = &s.ctx else { return el().size(0.0, 0.0) };
     let me = s.chat.me.as_ref().is_some_and(|m| m.id == c.user.id);
     let clear = oklcha(0.0, 0.0, 0.0, 0.0);
@@ -650,7 +658,7 @@ fn msg_menu_scrim(s: &State) -> El {
 
 /// The right-click menu of a message: answer, copy, and (for this account's own) edit or delete.
 fn message_menu(s: &State) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let Some(open) = &s.msg_menu else { return el().size(0.0, 0.0) };
     let m = open.msg.clone();
     let mine = s.chat.me.as_ref().is_some_and(|me| me.id == m.author.id);
@@ -699,7 +707,7 @@ fn short_date(ms: i64) -> String {
 /// The profile card: banner (the picture, else the colour they chose), picture, names, pronouns, bio,
 /// where they are in voice, when they joined, and a way to write to them.
 fn profile_card(s: &State) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let Some(pr) = &s.profile else { return el().size(0.0, 0.0) };
     let u = &pr.user;
     let me = s.chat.me.as_ref().is_some_and(|m| m.id == u.id);
@@ -818,7 +826,7 @@ fn on_screen(url: String) -> impl Fn(&mut State, bool, &mut rune::Tx) + 'static 
 /// An animated picture with the "GIF" tag in its corner; the grey box stands in until it arrives.
 /// `animated` is the address of the moving version, so it plays while this is on screen.
 fn gif_view(key: String, w: f32, h: f32, img: Option<&crate::net::Shown>, animated: String) -> El {
-    let t = tok::theme(true);
+    let t = crate::appearance::theme();
     let base = el().key(key).size(w, h).radius(radius::SM).on_visible(on_screen(animated));
     let base = match img { Some(i) => base.pixels(&i.pixels), None => base.fill(t.control_off) };
     base.child(el().absolute(8.0, 8.0).child(
@@ -827,7 +835,7 @@ fn gif_view(key: String, w: f32, h: f32, img: Option<&crate::net::Shown>, animat
 }
 
 fn attachment(s: &State, a: &Attachment) -> El {
-    let t = tok::theme(true);
+    let t = crate::appearance::theme();
     let url = a.url.clone();
     let open = move |_: &mut State, tx: &mut rune::Tx| { if let Some(u) = &url { let _ = tx.open_url(u); } };
     if a.is_gif() {
@@ -880,12 +888,12 @@ fn attachment(s: &State, a: &Attachment) -> El {
         }
         let (id, u) = (a.id.clone(), a.url.clone().unwrap_or_default());
         return row().key(format!("att-{}", a.id)).px(10.0).py(8.0).gap(8.0).radius(radius::SM).fill(t.card)
-            .child(text(format!("▶ {}", a.filename)).font(type_::BODY).color(tok::accent(0, true)))
+            .child(text(format!("▶ {}", a.filename)).font(type_::BODY).color(crate::appearance::accent(0)))
             .child(text(human_size(a.size)).font(type_::LABEL).color(t.text_secondary))
             .cursor(rune::Cursor::Pointer).on_press(move |s: &mut State| crate::toggle_video(s, &id, &u));
     }
     row().key(format!("att-{}", a.id)).px(10.0).py(8.0).gap(8.0).radius(radius::SM).fill(t.card)
-        .child(text(format!("📎 {}", a.filename)).font(type_::BODY).color(tok::accent(0, true)))
+        .child(text(format!("📎 {}", a.filename)).font(type_::BODY).color(crate::appearance::accent(0)))
         .child(text(human_size(a.size)).font(type_::LABEL).color(t.text_secondary))
         .cursor(rune::Cursor::Pointer).on_press_tx(open)
 }
@@ -902,7 +910,7 @@ fn is_welcome(m: &Msg) -> bool {
 
 /// The message text: a plain label when it has no markup, else Markdown with mentions rewritten.
 fn message_text(s: &State, m: &Msg, dim: bool) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let names: Vec<(String, String)> = m.mentions.iter().map(|u| (u.id.clone(), name_in(s, u))).collect();
     let src = crate::richtext::prepare(&m.body, &names);
     let color = if dim { t.text_secondary } else { t.text };
@@ -994,11 +1002,11 @@ fn name_color(s: &State, user_id: &str) -> Color {
     let guild = s.chat.nav.guild.and_then(|g| s.chat.guilds.get(g));
     guild.and_then(|g| s.chat.roster.name_color(&g.id, user_id))
         .and_then(|c| rune::color::hex(&format!("#{:06x}", c & 0xFF_FFFF)))
-        .unwrap_or(tok::theme(true).text)
+        .unwrap_or(crate::appearance::theme().text)
 }
 
 fn reply_bar(s: &State, m: &Msg) -> Option<El> {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     // The elbow that ties the quote to the message below: it turns from the quote
     // line and drops under the avatar column of the message beneath.
     let arc = el().size(26.0, 22.0)
@@ -1026,7 +1034,7 @@ fn reply_bar(s: &State, m: &Msg) -> Option<El> {
 }
 
 fn embed_card(s: &State, key: String, e: &Embed) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     if e.gif && let Some(u) = &e.image {
         let animated = crate::model::embed_image_url(u, true);
         let img = playing(s, &animated, &crate::model::embed_image_url(u, false));
@@ -1068,7 +1076,7 @@ fn embed_card(s: &State, key: String, e: &Embed) -> El {
 
 /// `prev` is the message above, used to group consecutive messages and to place day separators.
 fn message(s: &State, m: &Msg, prev: Option<&Msg>) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let now = crate::clock::now_ms();
     let new_day = m.ts.is_some() && prev.is_none_or(|q| q.ts.map(crate::clock::day_of) != m.ts.map(crate::clock::day_of));
     let mut out = col().key(format!("m-{}", m.id)).w_full();
@@ -1079,7 +1087,7 @@ fn message(s: &State, m: &Msg, prev: Option<&Msg>) -> El {
     }
     if m.kind == 7 {
         return out.child(row().w_full().px(16.0).py(6.0).gap(10.0).center_y()
-            .child(el().size(8.0, 8.0).radius(4.0).fill(tok::accent(4, true)))
+            .child(el().size(8.0, 8.0).radius(4.0).fill(crate::appearance::accent(4)))
             .child(text(format!("{} entrou no servidor", m.author.display())).font(type_::BODY).color(t.text_secondary))
             .child(text(m.ts.map(crate::clock::hhmm).unwrap_or_default()).font(type_::LABEL).color(t.text_secondary.alpha(0.6))));
     }
@@ -1192,7 +1200,7 @@ fn maybe_load_older(s: &mut State, first_visible: usize) {
 }
 
 fn message_list(s: &State) -> El {
-    let t = tok::theme(true);
+    let t = crate::appearance::theme();
     let n = s.chat.log().map_or(0, |l| l.msgs.len());
     let cid = s.chat.channel_id().unwrap_or("none").to_string();
     let first = s.chat.log().and_then(|l| l.msgs.first()).map(|m| m.id.clone());
@@ -1231,15 +1239,15 @@ fn message_list(s: &State) -> El {
 
 fn status_color(status: &str) -> Color {
     match status {
-        "online" => tok::accent(4, true),
-        "idle" => tok::accent(3, true),
+        "online" => crate::appearance::accent(4),
+        "idle" => crate::appearance::accent(3),
         "dnd" => pal().unread,
         _ => oklch(0.5, 0.01, 265.0),
     }
 }
 
 fn member_row(s: &State, user: &api::User, nick: Option<&str>, status: &str, owner: bool) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let offline = status == "offline";
     let face = row().size(32.0, 32.0).child(avatar(s, user, 32.0))
         .child(el().absolute(21.0, 21.0).size(12.0, 12.0).radius(6.0).fill(status_color(status)).border(2.0, p.side));
@@ -1256,7 +1264,7 @@ fn member_row(s: &State, user: &api::User, nick: Option<&str>, status: &str, own
 }
 
 fn members_panel(s: &State) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let guild = s.chat.nav.guild.and_then(|g| s.chat.guilds.get(g));
     let owner = guild.and_then(|g| g.owner_id.as_deref());
     let search = row().h(32.0).mx(12.0).mt(10.0).px(10.0).gap(8.0).center_y().radius(radius::SM)
@@ -1294,7 +1302,7 @@ fn members_panel(s: &State) -> El {
 
 /// The channel search: query box and the matching messages of the open channel.
 fn search_view(s: &State) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let bar = row().px(16.0).py(10.0).gap(8.0).center_y()
         .child(rune::icon(&SEARCH_ICON, 16.0).color(t.text_secondary))
         .child(text_input(&s.search.input, type_::BODY).key("search-input")
@@ -1347,7 +1355,7 @@ fn typing_notice(s: &State) -> Option<String> {
 }
 
 fn typing_bar(s: &State) -> El {
-    let t = tok::theme(true);
+    let t = crate::appearance::theme();
     let Some(msg) = typing_notice(s) else {
         // Nobody typing takes no room at all.
         return el().size(0.0, 0.0);
@@ -1358,7 +1366,7 @@ fn typing_bar(s: &State) -> El {
 /// The stage above the text chat of a voice channel: a "join" card, or, once in the call, everyone's
 /// picture and the call controls.
 fn voice_panel(s: &State) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let Some(ch) = s.chat.voice_view.and_then(|_| s.chat.channel()) else { return el().size(0.0, 0.0) };
     let clear = oklcha(0.0, 0.0, 0.0, 0.0);
     let stage = col().w_full().h(300.0).fill(oklch(0.0, 0.0, 0.0)).center().gap(24.0);
@@ -1403,7 +1411,7 @@ fn voice_panel(s: &State) -> El {
 /// The band above the chat while a DM call is ringing for this account.
 fn incoming_call_bar(s: &State) -> El {
     let Some(cid) = &s.incoming_call else { return el().size(0.0, 0.0) };
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let name = s.chat.dms.iter().find(|c| c.id == *cid).and_then(|c| c.peer.as_ref())
         .map(|u| u.display().to_string()).unwrap_or_else(|| "Alguém".into());
     let channel = cid.clone();
@@ -1422,7 +1430,7 @@ fn incoming_call_bar(s: &State) -> El {
 }
 
 fn main_view(s: &State, stage: Option<[f32; 2]>) -> El {
-    let (p, t) = (pal(), tok::theme(true));
+    let (p, t) = (pal(), crate::appearance::theme());
     let prefix = if s.chat.nav.guild.is_some() { "#" } else { "@" };
     let mosaic_channel = if s.call.view && s.call.active() { s.call.channel_id.as_deref().and_then(|id| s.chat.voice_channel(id)).map(|(_, c)| c.name.clone()) } else { None };
     let name = mosaic_channel.clone().unwrap_or_else(|| s.chat.channel().map_or(String::new(), |c| c.name.clone()));

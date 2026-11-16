@@ -4,6 +4,7 @@
 
 mod anim;
 mod animsize;
+mod appearance;
 mod auth;
 mod audio;
 mod call;
@@ -219,6 +220,7 @@ fn demo_chat() -> Chat {
 impl Default for State {
     fn default() -> Self {
         let prefs = prefs::load();
+        crate::appearance::set(prefs.appearance);
         State {
             rail_hover: None, settings_open: false, pf: Default::default(), prof: [TextEdit::new(""), TextEdit::new(""), TextEdit::new(""), TextEdit::new("")],
             picker: Default::default(), prefs: prefs.clone(), plus_open: false, msg_hover: None, react_picker: None, highlighted: None, pointer: rune::Live::new([0.0, 0.0]), member_search: TextEdit::new(""), my_status: prefs.status, status_menu: false, video: None, customize_open: false, notice: None,
@@ -1291,6 +1293,20 @@ mod tests {
         assert!(rt.find("msg-menu").is_some());
         assert!(rt.find("mm-reply").is_some() && rt.find("mm-copy").is_some());
         assert!(rt.find("mm-edit").is_some() && rt.find("mm-delete").is_some(), "own messages can be changed");
+    }
+
+    #[test]
+    fn the_settings_appearance_page_offers_the_three_modes() {
+        let env = Env { system_dark: true, scale: 2.0 };
+        let mut rt = Runtime::new(State::default(), ui::view, (1100.0, 700.0), env);
+        rt.update(|s, _| {
+            s.chat.me = Some(fluxer_client::api::User { id: "1".into(), username: "eu".into(), global_name: None, avatar: None, discriminator: None });
+            s.settings_open = true;
+            s.pf.page = crate::ui::settings::Page::Appearance;
+        });
+        rt.frame(0.0);
+        assert!(rt.find("appearance-0").is_some() && rt.find("appearance-1").is_some() && rt.find("appearance-2").is_some());
+        assert!(rt.find("set-page-appearance").is_some());
     }
 
     #[test]
