@@ -41,7 +41,7 @@ pub fn composer(s: &State) -> El {
     // As tall as the account bar at the bottom left, and frosted: a little translucent over the
     // chat with the blur behind it.
     let mut bar = row().key("composer-box").h(BOX_H).px(8.0).gap(2.0).center_y().radius(10.0)
-        .fill(oklcha(0.30, 0.008, 265.0, 0.75)).backdrop_blur(10.0)
+        .fill(floating_fill(0.75)).backdrop_blur(10.0)
         .child(row().key("plus-btn").size(34.0, 34.0).radius(radius::SM).center().fill(if s.plus_open { p.select } else { clear() }).hover(p.select)
             .child(rune::icon(&PLUS, 22.0).color(tint(s.plus_open)))
             .cursor(rune::Cursor::Pointer)

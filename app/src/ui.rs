@@ -50,7 +50,7 @@ fn pal() -> Pal {
         crate::appearance::MIDNIGHT => Pal {
             link: oklch(0.78, 0.14, 245.0), rail: oklch(0.0, 0.0, 0.0), side: oklch(0.0, 0.0, 0.0),
             chat: oklch(0.0, 0.0, 0.0), input: oklch(0.055, 0.0, 0.0),
-            line: oklcha(1.0, 0.0, 0.0, 0.06), select: oklcha(1.0, 0.0, 0.0, 0.05), hover: oklcha(1.0, 0.0, 0.0, 0.025),
+            line: oklch(0.28, 0.0, 0.0), select: oklcha(1.0, 0.0, 0.0, 0.05), hover: oklcha(1.0, 0.0, 0.0, 0.025),
             brand: crate::appearance::accent(0), unread: oklch(0.64, 0.2, 25.0),
         },
         _ => Pal {
@@ -61,6 +61,19 @@ fn pal() -> Pal {
         },
     }
 }
+/// The fill of the bars that float over the chat: the message box (translucent) and the account bar.
+/// Midnight gets a neutral near-black; the other appearances keep their bluish grey.
+fn floating_fill(alpha: f32) -> Color {
+    if crate::appearance::mode() == crate::appearance::MIDNIGHT { oklcha(0.17, 0.0, 0.0, alpha) }
+    else if alpha < 1.0 { oklcha(0.30, 0.008, 265.0, alpha) } else { oklch(0.2, 0.008, 265.0) }
+}
+
+/// A thin grey line between side-by-side panels. Only Midnight needs it: there every panel is the
+/// same black, so without it nothing shows where one ends and the next begins.
+fn panel_divider() -> El {
+    if crate::appearance::mode() == crate::appearance::MIDNIGHT { el().w(1.0).h_full().fill(pal().line) } else { el().size(0.0, 0.0) }
+}
+
 const ATTACHMENT_MAX: (f32, f32) = (360.0, 280.0);
 
 pub fn view(s: &State, cx: &mut Cx<State>) -> El {
@@ -372,7 +385,7 @@ fn dock(s: &State) -> El {
             .cursor(rune::Cursor::Pointer).on_press(move |s: &mut State| f(s));
         b
     };
-    let mut card = col().key("dock").w(dock_w(s)).radius(12.0).fill(oklch(0.2, 0.008, 265.0)).border(1.0, p.line).shadow(6.0, 24.0, t.shadow);
+    let mut card = col().key("dock").w(dock_w(s)).radius(12.0).fill(floating_fill(1.0)).border(if crate::appearance::mode() == crate::appearance::MIDNIGHT { 0.0 } else { 1.0 }, p.line).shadow(6.0, 24.0, t.shadow);
     if c.active() {
         let place = c.channel_id.as_deref().and_then(|id| s.chat.voice_channel(id)).map_or(String::new(), |(g, ch)| format!("{} / {}", ch.name, g.name));
         let connected = c.phase == crate::call::Phase::Connected;
@@ -1400,8 +1413,9 @@ fn main_view(s: &State, stage: Option<[f32; 2]>) -> El {
         .child(if s.chat.voice_view.is_some() || mosaic_channel.is_some() { rune::icon(&SPEAKER, 20.0).color(t.text_secondary) } else { text(prefix).font(type_::TITLE).color(t.text_secondary) })
         .child(text(name.clone()).font(type_::TITLE).color(t.text).grow(1.0));
     if in_guild {
-        header = header.child(text("Membros").key("toggle-members").font(type_::LABEL).color(if s.show_members { t.text } else { t.text_secondary })
-            .px(10.0).py(6.0).radius(radius::SM).fill(if s.show_members { p.select } else { oklcha(0.0, 0.0, 0.0, 0.0) }).hover(p.select)
+        header = header.child(row().key("toggle-members").size(28.0, 28.0).center().radius(radius::SM)
+            .fill(if s.show_members { p.select } else { oklcha(0.0, 0.0, 0.0, 0.0) }).hover(p.select)
+            .child(rune::icon(&MEMBERS, 18.0).color(if s.show_members { t.text } else { t.text_secondary }))
             .cursor(rune::Cursor::Pointer).on_press(|s: &mut State| s.show_members = !s.show_members));
     }
     if s.chat.voice_view.is_none() && mosaic_channel.is_none() {
@@ -1432,8 +1446,8 @@ fn main_view(s: &State, stage: Option<[f32; 2]>) -> El {
         col().grow(1.0).h_full().min_w(0.0).fill(p.chat).child(incoming_call_bar(s)).child(header).child(el().w_full().h(1.0).fill(p.line))
             .child(voice_panel(s)).child(message_list(s)).child(composer)
     };
-    let mut all = row().w_full().h_full().fill(p.rail).child(guild_rail(s)).child(channel_list(s)).child(main);
-    if in_guild && s.show_members { all = all.child(members_panel(s)) }
+    let mut all = row().w_full().h_full().fill(p.rail).child(guild_rail(s)).child(panel_divider()).child(channel_list(s)).child(panel_divider()).child(main);
+    if in_guild && s.show_members { all = all.child(panel_divider()).child(members_panel(s)) }
     for e in compose::layers(s) { all = all.child(e) }
     // A mention's card anchors beside this marker at the point the pointer was on.
     let mention_anchor = s.profile.as_ref().and_then(|p| p.at)
