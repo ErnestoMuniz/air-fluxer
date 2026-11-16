@@ -19,8 +19,10 @@ fn dim() -> Color { match crate::appearance::mode() { crate::appearance::LIGHT =
 fn accent() -> Color { hx("#413CDD") }
 fn banner() -> Color { hx("#5F3C30") }
 fn card_bg() -> Color { match crate::appearance::mode() { crate::appearance::LIGHT => hx("#FFFFFF"), crate::appearance::MIDNIGHT => hx("#050505"), _ => hx("#0C0B0E") } }
-fn line() -> Color { match crate::appearance::mode() { crate::appearance::LIGHT => hx("#D6D6DE"), crate::appearance::MIDNIGHT => hx("#161616"), _ => hx("#34313C") } }
+fn line() -> Color { match crate::appearance::mode() { crate::appearance::LIGHT => hx("#D6D6DE"), crate::appearance::MIDNIGHT => hx("#2A2A2A"), _ => hx("#34313C") } }
 fn hover() -> Color { match crate::appearance::mode() { crate::appearance::LIGHT => hx("#E2E2E7"), crate::appearance::MIDNIGHT => hx("#121212"), _ => hx("#332F3B") } }
+/// The dialog's outer edge: a quiet line, neutral grey in Midnight.
+fn card_edge() -> Color { if crate::appearance::mode() == crate::appearance::MIDNIGHT { hx("#2A2A2A") } else { hx("#2E2B35") } }
 fn pressed_row() -> Color { match crate::appearance::mode() { crate::appearance::LIGHT => hx("#D5D5DD"), crate::appearance::MIDNIGHT => hx("#1A1A1A"), _ => hx("#403D45") } }
 
 /// The kit for the form fields: the page's own greys instead of the theme's.
@@ -95,6 +97,17 @@ fn guild_id(s: &State) -> Option<String> { s.pf.kind.and_then(|g| s.chat.guilds.
 fn profile_key(s: &State) -> Option<String> {
     let me = s.chat.me.as_ref()?;
     Some(crate::net::profile_key(&me.id, guild_id(s).as_deref()))
+}
+
+/// Escape: closes the open picker or menu first, then the dialog itself (which, with unsaved
+/// changes, nags instead). False when the dialog is not open.
+pub fn escape(s: &mut State) -> bool {
+    if !s.settings_open { return false }
+    if s.pf.emoji_open { s.pf.emoji_open = false }
+    else if s.pf.color_open { s.pf.color_open = false }
+    else if s.pf.type_open { s.pf.type_open = false }
+    else { close(s) }
+    true
 }
 
 pub fn dirty(s: &State) -> bool { (0..4).any(|i| s.prof[i].text != s.pf.base[i]) }
@@ -833,7 +846,7 @@ pub fn dialog(s: &State) -> El {
             .fill(status_color(&s.chat.roster.status_of(&me.id))).border(2.0, pressed_row()));
     let side_body = col().w_full().px(12.0).py(16.0).gap(2.0)
         .child(row().h(10.0))
-        .child(row().h(44.0).px(8.0).gap(10.0).center_y().radius(radius::SM)
+        .child(row().py(8.0).px(8.0).gap(10.0).center_y().radius(radius::SM)
             .fill(if s.pf.page == Page::Profile { pressed_row() } else { oklcha(0.0, 0.0, 0.0, 0.0) })
             .child(face)
             .child(col().gap(1.0)
@@ -859,7 +872,8 @@ pub fn dialog(s: &State) -> El {
         }));
     let side = col().w(320.0).h_full().fill(sidebar_bg())
         .child(side_body.scroll(ScrollSpec { stick_bottom: false }).grow(1.0).min_h(0.0))
-        .child(side_footer());
+        .child(el().w_full().h(1.0).fill(line()))
+        .child(side_footer().pt(12.0));
 
     // ---- header: the title, or the bar about unsaved changes ----
     let changed = dirty(s) && s.pf.page == Page::Profile;
@@ -894,10 +908,13 @@ pub fn dialog(s: &State) -> El {
     };
 
     let card = row().key("settings-card").w_full().h_full().max_w(1400.0).radius(radius::LG).fill(panel())
-        .border(1.0, hx("#2E2B35")).shadow(8.0, 32.0, crate::appearance::theme().shadow).clip_rounded(radius::LG)
+        .shadow(8.0, 32.0, crate::appearance::theme().shadow).clip_rounded(radius::LG)
         .on_press(|_: &mut State| {})
         .child(side)
-        .child(col().grow(1.0).h_full().min_w(0.0).child(top).child(page));
+        .child(el().w(1.0).h_full().fill(line()))
+        .child(col().grow(1.0).h_full().min_w(0.0).child(top).child(el().w_full().h(1.0).fill(line())).child(page))
+        // The outline goes last so the panels' own fills cannot paint over it.
+        .child(el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).radius(radius::LG).border(1.0, card_edge()));
 
     let mut scrim = row().key("settings-scrim").pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).center().px(32.0).py(32.0)
         .fill(oklcha(0.0, 0.0, 0.0, 0.82))

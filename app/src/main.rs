@@ -1035,6 +1035,7 @@ fn main() {
         ],
         setup: Some(setup),
         poll: Some(poll),
+        on_key: Some(|s, ev, _| matches!(ev.key, rune::Key::Escape) && ui::settings::escape(s)),
         ..AppSpec::new("Fluxer", (1100.0, 700.0), State::default, ui::view)
     };
     rune::run(spec);
