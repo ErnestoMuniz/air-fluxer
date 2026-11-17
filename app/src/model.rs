@@ -55,6 +55,8 @@ pub struct Channel {
     /// Newest message the account has read, from the server's read state. We never acknowledge, so
     /// the "new messages" line stays where the web app left it.
     pub last_read: Option<String>,
+    /// When the newest message in this channel arrived (Unix ms), for ordering the DM list.
+    pub last_activity: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -167,7 +169,11 @@ impl Chat {
         self.mark_read();
     }
 
-    /// Opens the channel with this id, in the open server, another server, or the DMs.
+    /// Newest activity first, so a DM that just received a message moves to the top.
+    fn sort_dms(&mut self) {
+        self.dms.sort_by(|a, b| b.last_activity.cmp(&a.last_activity).then_with(|| b.id.cmp(&a.id)));
+    }
+
     pub fn open_channel_by_id(&mut self, id: &str) -> bool {
         if let Some(i) = self.channels().iter().position(|c| c.id == id) { self.open_channel(i); return true }
         if let Some(gi) = self.guilds.iter().position(|g| g.channels.iter().any(|c| c.id == id)) {
@@ -243,7 +249,7 @@ impl Chat {
                     let new = matches!((text(c, "last_message_id"), &last_read), (Some(l), Some(r)) if snowflake_cmp(l, r).is_gt());
                     Some(((cat.map_or(-1, |c| c.2), cat.map_or(String::new(), |c| c.0.to_string()), c.get("position").and_then(Value::as_i64).unwrap_or(0)),
                         Channel { id: id.into(), name: text(c, "name")?.into(), unread: mentions, peer: None,
-                            category: cat.map(|c| c.1.to_string()).filter(|n| !n.is_empty()), new, last_read }))
+                            category: cat.map(|c| c.1.to_string()).filter(|n| !n.is_empty()), new, last_read, last_activity: 0 }))
                 })
                 .collect();
             chans.sort_by(|a, b| a.0.cmp(&b.0));
@@ -286,10 +292,12 @@ impl Chat {
                 let id = text(c, "id")?;
                 let (last_read, mentions) = reads.get(id).cloned().unwrap_or((None, 0));
                 let new = matches!((text(c, "last_message_id"), &last_read), (Some(l), Some(r)) if snowflake_cmp(l, r).is_gt());
-                Some((text(c, "last_message_id").unwrap_or("0").to_string(), Channel {
+                let last = text(c, "last_message_id").unwrap_or("0");
+                let at = last.parse::<u64>().map(|n| ((n >> 22) as i64) + 1_420_070_400_000).unwrap_or(0);
+                Some((last.to_string(), Channel {
                     id: id.into(),
                     name: if name.is_empty() { "Conversa".into() } else { name },
-                    unread: mentions, new, last_read,
+                    unread: mentions, new, last_read, last_activity: at,
                     peer: if kind == 1 { peers.into_iter().next() } else { None },
                     ..Channel::default()
                 }))
@@ -356,6 +364,9 @@ impl Chat {
         let cid = m.channel_id.clone();
         let mine = self.me.as_ref().is_some_and(|u| u.id == m.author.id);
         let open = self.channel_id() == Some(cid.as_str());
+        let at = m.timestamp.unwrap_or_else(crate::clock::now_ms);
+        if let Some(c) = self.find_channel_mut(&cid) { c.last_activity = c.last_activity.max(at) }
+        self.sort_dms();
         self.roster.remember(&m.author);
         self.roster.stop_typing(&cid, &m.author.id);
         let log = self.logs.entry(cid.clone()).or_default();
@@ -473,6 +484,8 @@ impl Chat {
         let me = self.me.clone()?;
         self.next_local += 1;
         let id = format!("local-{}", self.next_local);
+        if let Some(c) = self.find_channel_mut(channel_id) { c.last_activity = crate::clock::now_ms() }
+        self.sort_dms();
         let log = self.logs.entry(channel_id.to_string()).or_default();
         log.msgs.push({ let mut m = Msg::local(id.clone(), me, body, Delivery::Pending); m.ts = Some(crate::clock::now_ms()); m });
         Some(id)

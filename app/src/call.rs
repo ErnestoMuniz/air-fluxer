@@ -236,9 +236,10 @@ impl Call {
         self.engine_send(Cmd::Watch(Vec::new()));
     }
 
-    /// The key the server knows a connection's stream by.
+    /// The key the server knows a connection's stream by. A DM call has no server, so a stable
+    /// placeholder takes its place (the client-side subscription only needs the connection).
     pub fn stream_key(&self, connection: &str) -> Option<String> {
-        Some(format!("{}:{}:{}", self.guild_id.as_deref()?, self.channel_id.as_deref()?, connection))
+        Some(format!("{}:{}:{}", self.guild_id.as_deref().unwrap_or("-"), self.channel_id.as_deref()?, connection))
     }
 
     pub fn is_watching(&self, connection: &str) -> bool {
