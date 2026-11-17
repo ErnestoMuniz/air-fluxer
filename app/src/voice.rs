@@ -303,7 +303,12 @@ fn wanted(source: TrackSource, conn: Option<&str>, watch: &std::collections::Has
 
 fn apply_subscription(p: &RemoteTrackPublication, identity: &str, watch: &std::collections::HashSet<String>) {
     let want = wanted(p.source(), connection_of_identity(identity), watch);
-    if p.is_subscribed() != want { p.set_subscribed(want) }
+    if p.is_subscribed() != want {
+        p.set_subscribed(want);
+        if want && matches!(p.kind(), TrackKind::Video) {
+            p.set_enabled(true);
+        }
+    }
 }
 
 const VIDEO_MAX_WIDTH: u32 = 1600;
