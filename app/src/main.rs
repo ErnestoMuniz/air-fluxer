@@ -150,6 +150,8 @@ pub struct State {
     pending_jump: Option<(String, String)>,
     /// A DM call ringing for this account (channel id).
     pub incoming_call: Option<String>,
+    /// A message was just sent: the next poll asks the list to follow the bottom.
+    stick_to_bottom: bool,
     pub profile: Option<Prof>,
     /// Profiles fetched so far, by `net::profile_key`.
     pub profiles: std::collections::HashMap<String, fluxer_client::api::Profile>,
@@ -228,7 +230,7 @@ impl Default for State {
         State {
             rail_hover: None, settings_open: false, pf: Default::default(), prof: [TextEdit::new(""), TextEdit::new(""), TextEdit::new(""), TextEdit::new("")],
             picker: Default::default(), prefs: prefs.clone(), plus_open: false, msg_hover: None, react_picker: None, highlighted: None, pointer: rune::Live::new([0.0, 0.0]), member_search: TextEdit::new(""), my_status: prefs.status, status_menu: false, video: None, customize_open: false, notice: None,
-            ctx: None, msg_menu: None, draft_mode: Draft { reply: None, editing: None }, acked: None, search: Default::default(), pending_jump: None, incoming_call: None, profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
+            ctx: None, msg_menu: None, draft_mode: Draft { reply: None, editing: None }, acked: None, search: Default::default(), pending_jump: None, incoming_call: None, stick_to_bottom: false, profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
             intro: 0.0, intro_t0: None, chat: demo_chat(), net: net::Net::default(), draft: TextEdit::new(""), attachments: Vec::new(), gateway: None, subscribed: None, synced_guilds: Default::default(), show_members: true, call: Default::default(), focused: true, visible: 0..0, typing_wake: false, thumb: Default::default(),
         }
     }
@@ -567,6 +569,11 @@ fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
         else { s.pending_jump = Some((channel, id)) }
     }
     changed |= s.call.poll(s.gateway.as_ref());
+    // A message was just sent: follow the end, even if the list was scrolled up.
+    if std::mem::take(&mut s.stick_to_bottom) && let Some(cid) = s.chat.channel_id() {
+        tx.scroll_to_bottom(format!("scroll-{cid}"));
+        changed = true;
+    }
     if s.picker.poll() { picker_images(s); changed = true }
     // A finished download changes what draws; so does a queue that just emptied.
     changed |= images_before || s.net.busy_with_images();
@@ -741,6 +748,7 @@ pub fn send(s: &mut State) {
         return;
     }
     send_body(s, body);
+    s.stick_to_bottom = true;
     // Cleared in place, not replaced: a fresh TextEdit would drop the caret and the next message
     // would need another click on the box.
     s.draft.clear();
@@ -780,6 +788,7 @@ fn send_attachments(s: &mut State, body: String) {
 pub fn send_body(s: &mut State, body: String) {
     let Some(cid) = s.chat.channel_id().map(String::from) else { return };
     s.notice = None;
+    s.stick_to_bottom = true;
     s.draft_mode.reply = None;
     s.draft_mode.editing = None;
     if s.net.has_api() {
