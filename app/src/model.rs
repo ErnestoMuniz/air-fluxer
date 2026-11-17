@@ -169,9 +169,12 @@ impl Chat {
         self.mark_read();
     }
 
-    /// Newest activity first, so a DM that just received a message moves to the top.
+    /// Newest activity first, so a DM that just received a message moves to the top. The selection
+    /// is an index, so it moves with the open conversation instead of pointing at its neighbour.
     fn sort_dms(&mut self) {
+        let open = if self.nav.guild.is_none() { self.dms.get(self.nav.channel).map(|c| c.id.clone()) } else { None };
         self.dms.sort_by(|a, b| b.last_activity.cmp(&a.last_activity).then_with(|| b.id.cmp(&a.id)));
+        if let Some(id) = open && let Some(i) = self.dms.iter().position(|c| c.id == id) { self.nav.channel = i }
     }
 
     pub fn open_channel_by_id(&mut self, id: &str) -> bool {
