@@ -64,6 +64,8 @@ pub fn composer(s: &State) -> El {
             .max_height(160.0)
             .wrap_anywhere()
             .width(None)
+            // Always draw as focused: no resting shadow/border plate on the frosted box.
+            .state(rune_kit::State::Focus)
             .on_edit(|s: &mut State| &mut s.draft)
             .on_key(|s: &mut State, ev: &rune::KeyEvent, tx: &mut rune::Tx| {
                 if ev.key == rune::Key::Enter && !ev.mods.shift {
