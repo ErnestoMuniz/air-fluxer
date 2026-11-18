@@ -367,7 +367,12 @@ impl Call {
                 Ev::Speaking(users) => self.speaking = users.into_iter().collect(),
                 Ev::Ping(ms) => self.ping = Some(ms),
                 Ev::Sharing(on) => { self.sharing = on; if !on { self.view = self.view && on } }
-                Ev::Screens(list) => { self.screen_sources = list; self.share_source = self.share_source.min(self.screen_sources.len().saturating_sub(1)) }
+                Ev::Screens(list) => {
+                    // No titles (permission not ready, or the capturer lists none): offer the
+                    // automatic primary screen, which is what a capture without a source uses.
+                    self.screen_sources = if list.is_empty() { vec!["Tela principal (automática)".into()] } else { list };
+                    self.share_source = self.share_source.min(self.screen_sources.len().saturating_sub(1))
+                }
                 Ev::Notice(why) => self.error = Some(why),
                 Ev::Video => {}
             }

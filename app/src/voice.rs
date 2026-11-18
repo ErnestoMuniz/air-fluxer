@@ -134,6 +134,17 @@ struct Screen { sid: TrackSid, stop: Arc<AtomicBool>, frames: Arc<std::sync::ato
 impl Drop for Screen { fn drop(&mut self) { self.stop.store(true, Ordering::Relaxed) } }
 
 /// Captures the screen (the macOS picker chooses what) and publishes it as a screen-share track.
+/// Screen Recording is a TCC permission; ask before touching ScreenCaptureKit.
+#[cfg(target_os = "macos")]
+fn request_screen_permission() -> bool {
+    unsafe extern "C" {
+        fn CGPreflightScreenCaptureAccess() -> bool;
+        fn CGRequestScreenCaptureAccess() -> bool;
+    }
+    // SAFETY: plain CoreGraphics C functions with no arguments.
+    unsafe { CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() }
+}
+
 async fn start_screen(room: &Room, height: u32, fps: u32, capture_source: Option<CaptureSource>) -> Result<Screen, String> {
     #[cfg(target_os = "macos")]
     {
@@ -470,6 +481,8 @@ async fn engine(mut cmds: UnboundedReceiver<Cmd>, out: mpsc::Sender<Ev>, wake: W
                         if on && live.is_none() { meter = Some(start_capture(mic_choice.clone(), shared.clone(), None)) }
                     }
                     Cmd::ListScreens => {
+                        #[cfg(target_os = "macos")]
+                        { let _ = request_screen_permission(); }
                         let mut options = DesktopCapturerOptions::new(DesktopCaptureSourceType::Screen);
                         options.set_sck_system_picker(false);
                         sources = DesktopCapturer::new(options).map(|c| c.get_source_list()).unwrap_or_default();
