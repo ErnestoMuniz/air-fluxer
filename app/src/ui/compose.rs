@@ -44,7 +44,13 @@ pub fn composer(s: &State) -> El {
     let chars = s.draft.text.chars().count();
     let rows = (chars / 55 + 1).clamp(1, 6);
     let box_h = BOX_H + (rows as f32 - 1.0) * 20.0;
-    let k = Kit::neutral(!crate::appearance::dark());
+    let mut k = Kit::neutral(crate::appearance::dark());
+    // The field sits on the box's frosted fill: no opaque plate or border of its own.
+    k.c.bg_base = oklcha(0.0, 0.0, 0.0, 0.0);
+    k.c.border_base = oklcha(0.0, 0.0, 0.0, 0.0);
+    k.c.border_focus = oklcha(0.0, 0.0, 0.0, 0.0);
+    k.c.text_base = t.text;
+    k.c.text_muted = t.text_secondary;
     let mut bar = row().key("composer-box").h(box_h).px(8.0).gap(2.0).center_y().radius(10.0)
         .fill(floating_fill(0.75)).backdrop_blur(10.0)
         .child(row().key("plus-btn").size(34.0, 34.0).radius(radius::SM).center().fill(if s.plus_open { p.select } else { clear() }).hover(p.select)

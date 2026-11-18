@@ -82,7 +82,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
 
 fn login_view(s: &State) -> El {
     let t = crate::appearance::theme();
-    let k = &Kit::neutral(!crate::appearance::dark());
+    let k = &Kit::neutral(crate::appearance::dark());
     let a = &s.auth;
     const W: f32 = 430.0;
     let panel = oklch(0.2, 0.01, 300.0);
