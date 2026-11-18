@@ -889,6 +889,20 @@ fn attachment(s: &State, a: &Attachment) -> El {
             .child(text(human_size(a.size)).font(type_::LABEL).color(t.text_secondary))
             .cursor(rune::Cursor::Pointer).on_press(move |s: &mut State| crate::toggle_video(s, &id, &u));
     }
+    let name = a.filename.to_lowercase();
+    let textish = a.content_type.as_deref().is_some_and(|c| c.starts_with("text/"))
+        || [".txt", ".log", ".md", ".json", ".csv"].iter().any(|e| name.ends_with(e));
+    if textish && let Some(u) = a.url.clone() {
+        let file = a.filename.clone();
+        return row().key(format!("att-{}", a.id)).w_full().max_w(420.0).px(12.0).py(10.0).gap(10.0).radius(8.0)
+            .fill(t.card).border(1.0, pal().line)
+            .child(rune::icon(&PAPERCLIP, 22.0).color(t.text_secondary))
+            .child(col().gap(1.0).grow(1.0)
+                .child(text(a.filename.clone()).font(type_::BODY).color(t.text))
+                .child(text(format!("{} — clique para abrir", human_size(a.size))).font(type_::LABEL).color(t.text_secondary)))
+            .cursor(rune::Cursor::Pointer)
+            .on_press(move |s: &mut State| s.net.text(&u, &file));
+    }
     row().key(format!("att-{}", a.id)).px(10.0).py(8.0).gap(8.0).radius(radius::SM).fill(t.card)
         .child(text(format!("📎 {}", a.filename)).font(type_::BODY).color(crate::appearance::accent(0)))
         .child(text(human_size(a.size)).font(type_::LABEL).color(t.text_secondary))

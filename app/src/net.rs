@@ -104,6 +104,8 @@ pub enum Done {
     /// Messages matching a channel search; the query is echoed so a late answer for an older
     /// query does not replace the newer results.
     Search { query: String, res: Result<api::SearchOutcome, String> },
+    /// A text attachment downloaded for the in-app viewer.
+    Text { name: String, res: Result<String, String> },
     /// A page centered on a message (a search hit outside the loaded history).
     HistoryAround { channel: String, target: String, res: Result<Vec<Message>, String> },
     Profile { key: String, res: Result<api::Profile, String> },
@@ -210,6 +212,15 @@ impl Net {
         let (c, st) = (channel.to_string(), sticker.to_string());
         let nonce = crate::clock::now_ms().to_string();
         self.job(move || api.send_sticker(&c, &st, &nonce).map(|_| ()).map_err(|e| e.message), Done::Posted);
+    }
+
+    /// Downloads a text attachment into the in-app viewer.
+    pub fn text(&self, url: &str, name: &str) {
+        let (u, n) = (url.to_string(), name.to_string());
+        let echo = n.clone();
+        self.job(move || fluxer_client::api::fetch_bytes(&u, 2 * 1024 * 1024)
+            .map(|b| String::from_utf8_lossy(&b).to_string()).map_err(|e| e.message),
+            move |res| Done::Text { name: echo, res });
     }
 
     /// Starts ringing the other people of a DM call.

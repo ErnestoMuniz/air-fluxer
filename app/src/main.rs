@@ -460,6 +460,8 @@ fn on_net(s: &mut State, d: net::Done) -> bool {
         net::Done::AvatarSaved(res) => { ui::settings::on_avatar(s, res); true }
         net::Done::TimezoneSaved(res) => { ui::settings::on_timezone(s, res); true }
         net::Done::Search { query, res } => { on_search(s, query, res); true }
+        net::Done::Text { name, res: Ok(body) } => { s.text_view = Some((name, body)); true }
+        net::Done::Text { res: Err(e), .. } => { s.notice = Some(format!("Não foi possível abrir o texto: {e}")); true }
         net::Done::HistoryAround { channel, target, res: Ok(msgs) } => {
             s.chat.load_around(&channel, msgs);
             s.pending_jump = Some((channel, target));
@@ -628,6 +630,7 @@ pub fn join_voice(s: &mut State, channel: &str) {
 /// Starts (or joins) the DM call of the open direct-message channel.
 pub fn start_dm_call(s: &mut State, channel: &str) {
     let peer = s.chat.dms.iter().find(|c| c.id == channel).and_then(|c| c.peer.as_ref()).map(|p| p.id.clone());
+    s.text_view = None;
     if let Some(p) = peer { s.net.ring_call(channel, vec![p]) }
     s.incoming_call = None;
     s.call.join(s.gateway.as_ref(), None, channel);
@@ -667,6 +670,7 @@ fn remember(s: &State) {
 pub fn open_guild(s: &mut State, g: Option<usize>) {
     s.call.view = false;
     s.visible = 0..0;
+    s.text_view = None;
     s.chat.open_guild(g);
     reconcile(s);
     remember(s);
@@ -675,6 +679,7 @@ pub fn open_guild(s: &mut State, g: Option<usize>) {
 pub fn open_channel(s: &mut State, i: usize) {
     s.call.view = false;
     s.visible = 0..0;
+    s.text_view = None;
     s.draft_mode.reply = None;
     if s.draft_mode.editing.take().is_some() { s.draft.clear() }
     s.chat.open_channel(i);
@@ -736,6 +741,19 @@ pub fn send(s: &mut State) {
     if !s.attachments.is_empty() { return send_attachments(s, body) }
     if body.is_empty() { return }
     let Some(cid) = s.chat.channel_id().map(String::from) else { return };
+    // Past the server's message limit it goes as a text file, like the web client.
+    if body.chars().count() > 2000 && s.net.has_api() {
+        let path = std::env::temp_dir().join("mensagem.txt");
+        if std::fs::write(&path, body.as_bytes()).is_ok() {
+            s.notice = None;
+            s.draft_mode.reply = None;
+            s.draft_mode.editing = None;
+            s.net.send_file(&cid, "", path);
+            s.stick_to_bottom = true;
+            s.draft.clear();
+            return;
+        }
+    }
     if let Some(id) = s.draft_mode.editing.clone() {
         s.notice = None;
         if s.net.has_api() { s.net.edit_message(&cid, &id, &body) }
