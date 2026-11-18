@@ -19,7 +19,6 @@ use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
 use livekit::webrtc::audio_stream::native::NativeAudioStream;
 use livekit::webrtc::video_frame::VideoFormatType;
 use livekit::webrtc::video_stream::native::NativeVideoStream;
-use livekit::webrtc::desktop_capturer::{CaptureSource, DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions};
 use livekit::webrtc::video_frame::{I420Buffer, VideoFrame, VideoRotation};
 use livekit::webrtc::video_source::VideoResolution;
 use livekit::webrtc::video_source::RtcVideoSource;
@@ -133,32 +132,14 @@ struct Screen { sid: TrackSid, stop: Arc<AtomicBool>, frames: Arc<std::sync::ato
 
 impl Drop for Screen { fn drop(&mut self) { self.stop.store(true, Ordering::Relaxed) } }
 
-/// Captures the screen (the macOS picker chooses what) and publishes it as a screen-share track.
-/// Screen Recording is a TCC permission; ask before touching ScreenCaptureKit.
+/// Screen Recording is a TCC permission; ask before capturing.
 #[cfg(target_os = "macos")]
-fn request_screen_permission() -> bool {
-    unsafe extern "C" {
-        fn CGPreflightScreenCaptureAccess() -> bool;
-        fn CGRequestScreenCaptureAccess() -> bool;
-    }
-    // SAFETY: plain CoreGraphics C functions with no arguments.
-    unsafe { CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() }
-}
+fn request_screen_permission() -> bool { crate::screen_macos::permission() }
 
-async fn start_screen(room: &Room, height: u32, fps: u32, capture_source: Option<CaptureSource>) -> Result<Screen, String> {
-    #[cfg(target_os = "macos")]
-    {
-        // Screen Recording is a TCC permission: ask before touching ScreenCaptureKit, so the system
-        // prompt appears and a denied permission becomes a message instead of a silent black track.
-        unsafe extern "C" {
-            fn CGPreflightScreenCaptureAccess() -> bool;
-            fn CGRequestScreenCaptureAccess() -> bool;
-        }
-        // SAFETY: plain CoreGraphics C functions with no arguments.
-        let granted = unsafe { CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() };
-        if !granted {
-            return Err("Permita a Gravação de Tela em Ajustes do Sistema → Privacidade e Segurança e clique de novo (o macOS pode pedir para reabrir o app).".into());
-        }
+#[cfg(target_os = "macos")]
+async fn start_screen(room: &Room, height: u32, fps: u32, display: u32) -> Result<Screen, String> {
+    if !request_screen_permission() {
+        return Err("Permita a Gravação de Tela em Ajustes do Sistema → Privacidade e Segurança e clique de novo (o macOS pode pedir para reabrir o app).".into());
     }
     let max_h = height.clamp(360, 2160);
     let source = NativeVideoSource::new(VideoResolution { width: max_h * 16 / 9, height: max_h }, true);
@@ -167,46 +148,34 @@ async fn start_screen(room: &Room, height: u32, fps: u32, capture_source: Option
     let publication = room.local_participant().publish_track(LocalTrack::Video(track), publish).await
         .map_err(|e| format!("não foi possível compartilhar a tela: {e}"))?;
     let sid = publication.sid();
-    let stop = Arc::new(AtomicBool::new(false));
-    let flag = stop.clone();
     let frames = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let seen = frames.clone();
-    std::thread::Builder::new().name("fluxer-screen".into()).spawn(move || {
-        let mut options = DesktopCapturerOptions::new(DesktopCaptureSourceType::Screen);
-        options.set_include_cursor(true);
-        options.set_sck_system_picker(false);
-        let Some(mut capturer) = DesktopCapturer::new(options) else {
-            eprintln!("fluxer: no desktop capturer on this system");
-            return;
-        };
-        capturer.start_capture(capture_source, move |result| {
-            let Ok(frame) = result else { return };
-            seen.fetch_add(1, Ordering::Relaxed);
-            let (mut w, mut h) = (frame.width(), frame.height());
-            if w < 2 || h < 2 { return }
-            w &= !1;
-            h &= !1;
-            let mut buffer = I420Buffer::new(w as u32, h as u32);
-            let (sy, su, sv) = buffer.strides();
-            let (y, u, v) = buffer.data_mut();
-            yuv_helper::abgr_to_i420(frame.data(), frame.stride(), y, sy, u, su, v, sv, w, h);
-            // The chosen quality at most: a 4K/5K screen costs more than the encoder can send.
-            let max_w = (max_h * 16 / 9) as i32;
-            let max_hi = max_h as i32;
-            let buffer = if w > max_w || h > max_hi {
-                let (sw, sh) = if w * max_hi >= h * max_w {
-                    (max_w, (h * max_w / w).max(2) & !1)
-                } else { ((w * max_hi / h).max(2) & !1, max_hi) };
-                buffer.scale(sw, sh)
-            } else { buffer };
-            source.capture_frame(&VideoFrame::new(VideoRotation::VideoRotation0, buffer));
-        });
-        while !flag.load(Ordering::Relaxed) {
-            capturer.capture_frame();
-            std::thread::sleep(std::time::Duration::from_millis((1000 / fps.max(1) as u64).max(1)));
-        }
-    }).map_err(|e| format!("não foi possível iniciar a captura: {e}"))?;
+    let max_w = (max_h * 16 / 9) as i32;
+    let max_hi = max_h as i32;
+    let stop = crate::screen_macos::start(display, fps, move |frame| {
+        seen.fetch_add(1, Ordering::Relaxed);
+        let (mut w, mut h) = (frame.width as i32, frame.height as i32);
+        if w < 2 || h < 2 { return }
+        w &= !1;
+        h &= !1;
+        let mut buffer = I420Buffer::new(w as u32, h as u32);
+        let (sy, su, sv) = buffer.strides();
+        let (y, u, v) = buffer.data_mut();
+        yuv_helper::abgr_to_i420(&frame.data, frame.stride as u32, y, sy, u, su, v, sv, w, h);
+        let buffer = if w > max_w || h > max_hi {
+            let (sw, sh) = if w * max_hi >= h * max_w {
+                (max_w, (h * max_w / w).max(2) & !1)
+            } else { ((w * max_hi / h).max(2) & !1, max_hi) };
+            buffer.scale(sw, sh)
+        } else { buffer };
+        source.capture_frame(&VideoFrame::new(VideoRotation::VideoRotation0, buffer));
+    });
     Ok(Screen { sid, stop, frames, since: std::time::Instant::now() })
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn start_screen(_room: &Room, _height: u32, _fps: u32, _display: u32) -> Result<Screen, String> {
+    Err("compartilhamento de tela ainda não é suportado nesta plataforma".into())
 }
 
 impl Drop for Live {
@@ -388,7 +357,7 @@ async fn engine(mut cmds: UnboundedReceiver<Cmd>, out: mpsc::Sender<Ev>, wake: W
     let tell = { let out = out.clone(); let wake = wake.clone(); move || { let _ = out.send(Ev::Video); wake(); } };
     let mut watching: std::collections::HashSet<String> = Default::default();
     let mut live: Option<Live> = None;
-    let mut sources: Vec<CaptureSource> = Vec::new();
+    let mut sources: Vec<u32> = Vec::new();
     // The green rings come from the sound itself, checked often so they show at once.
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(30));
     // The room's round-trip time, asked from WebRTC every few seconds; not every frame (a stats
@@ -482,17 +451,21 @@ async fn engine(mut cmds: UnboundedReceiver<Cmd>, out: mpsc::Sender<Ev>, wake: W
                     }
                     Cmd::ListScreens => {
                         #[cfg(target_os = "macos")]
-                        { let _ = request_screen_permission(); }
-                        let mut options = DesktopCapturerOptions::new(DesktopCaptureSourceType::Screen);
-                        options.set_sck_system_picker(false);
-                        sources = DesktopCapturer::new(options).map(|c| c.get_source_list()).unwrap_or_default();
-                        send(Ev::Screens(sources.iter().map(|s| s.title()).collect()));
+                        {
+                            let _ = crate::screen_macos::permission();
+                            let list = crate::screen_macos::displays();
+                            sources = list.iter().map(|(id, _)| *id).collect();
+                            send(Ev::Screens(list.into_iter().map(|(_, n)| n).collect()));
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        send(Ev::Screens(Vec::new()));
                     }
                     Cmd::ShareScreen { on, height, fps, source } => {
                         let Some(l) = live.as_mut() else { continue };
                         if on {
                             if l.screen.is_none() {
-                                match start_screen(&l.room, height, fps, sources.get(source).cloned()).await {
+                                let display = sources.get(source).copied().unwrap_or(0);
+                                match start_screen(&l.room, height, fps, display).await {
                                     Ok(s) => { l.screen = Some(s); send(Ev::Sharing(true)) }
                                     Err(e) => send(Ev::Notice(e)),
                                 }

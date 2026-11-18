@@ -22,6 +22,8 @@ mod sounds;
 mod store;
 mod upload;
 mod attach;
+#[cfg(target_os = "macos")]
+mod screen_macos;
 mod voice;
 mod ui;
 
