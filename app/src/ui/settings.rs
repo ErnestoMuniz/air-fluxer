@@ -27,7 +27,7 @@ fn pressed_row() -> Color { match crate::appearance::mode() { crate::appearance:
 
 /// The kit for the form fields: the page's own greys instead of the theme's.
 fn fields() -> Kit {
-    let mut k = Kit::neutral(!crate::appearance::dark());
+    let mut k = Kit::neutral(crate::appearance::dark());
     k.c.bg_base = field_bg();
     k.c.border_base = hx("#3A3642");
     k.c.border_focus = accent();

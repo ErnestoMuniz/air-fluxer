@@ -22,6 +22,8 @@ mod sounds;
 mod store;
 mod upload;
 mod attach;
+#[cfg(target_os = "macos")]
+mod screen_macos;
 mod voice;
 mod ui;
 
@@ -99,7 +101,9 @@ fn on_search(s: &mut State, query: String, res: Result<fluxer_client::api::Searc
 /// A search hit was pressed: open its channel and put it in the middle of the list.
 pub fn open_search_hit(s: &mut State, tx: &mut Tx, channel: &str, id: &str) {
     s.search.open = false;
+    let old = s.chat.channel_id().map(String::from);
     if s.chat.channel_id() != Some(channel) && !s.chat.open_channel_by_id(channel) { return }
+    switch_draft(s, old);
     s.visible = 0..0;
     reconcile(s);
     if s.chat.logs.get(channel).is_some_and(|l| l.msgs.iter().any(|m| m.id == id)) {
@@ -152,6 +156,13 @@ pub struct State {
     pub incoming_call: Option<String>,
     /// A message was just sent: the next poll asks the list to follow the bottom.
     stick_to_bottom: bool,
+    /// A long message opened as a text file (title, body).
+    pub text_view: Option<(String, String)>,
+    /// A newer release announced by GitHub, and whether the update is being installed.
+    pub update: Option<(String, String)>,
+    pub updating: bool,
+    /// Unsent text per channel, so a draft stays in the conversation it was typed in.
+    drafts: std::collections::HashMap<String, String>,
     pub profile: Option<Prof>,
     /// Profiles fetched so far, by `net::profile_key`.
     pub profiles: std::collections::HashMap<String, fluxer_client::api::Profile>,
@@ -230,7 +241,7 @@ impl Default for State {
         State {
             rail_hover: None, settings_open: false, pf: Default::default(), prof: [TextEdit::new(""), TextEdit::new(""), TextEdit::new(""), TextEdit::new("")],
             picker: Default::default(), prefs: prefs.clone(), plus_open: false, msg_hover: None, react_picker: None, highlighted: None, pointer: rune::Live::new([0.0, 0.0]), member_search: TextEdit::new(""), my_status: prefs.status, status_menu: false, video: None, customize_open: false, notice: None,
-            ctx: None, msg_menu: None, draft_mode: Draft { reply: None, editing: None }, acked: None, search: Default::default(), pending_jump: None, incoming_call: None, stick_to_bottom: false, profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
+            ctx: None, msg_menu: None, draft_mode: Draft { reply: None, editing: None }, acked: None, search: Default::default(), pending_jump: None, incoming_call: None, stick_to_bottom: false, text_view: None, update: None, updating: false, drafts: Default::default(), profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
             intro: 0.0, intro_t0: None, chat: demo_chat(), net: net::Net::default(), draft: TextEdit::new(""), attachments: Vec::new(), gateway: None, subscribed: None, synced_guilds: Default::default(), show_members: true, call: Default::default(), focused: true, visible: 0..0, typing_wake: false, thumb: Default::default(),
         }
     }
@@ -342,6 +353,7 @@ fn setup(s: &mut State, wake: Waker) {
     s.picker.set_waker(wake.clone());
     s.wake = Some(wake.clone());
     if std::env::var_os("FLUXER_DEMO").is_some() { return }
+    s.net.check_update(env!("CARGO_PKG_VERSION"));
     match store::load() {
         Some(saved) => start_session(s, saved, wake),
         None => s.screen = Screen::Login,
@@ -457,7 +469,13 @@ fn on_net(s: &mut State, d: net::Done) -> bool {
         net::Done::Acked(_) => false,
         net::Done::AvatarSaved(res) => { ui::settings::on_avatar(s, res); true }
         net::Done::TimezoneSaved(res) => { ui::settings::on_timezone(s, res); true }
+        net::Done::Update(Ok(Some(u))) => { s.update = Some(u); true }
+        net::Done::Update(Ok(None)) | net::Done::Update(Err(_)) => false,
+        net::Done::UpdateFailed(Err(e)) => { s.updating = false; s.notice = Some(format!("Não foi possível atualizar: {e}")); true }
+        net::Done::UpdateFailed(Ok(_)) => false,
         net::Done::Search { query, res } => { on_search(s, query, res); true }
+        net::Done::Text { name, res: Ok(body) } => { s.text_view = Some((name, body)); true }
+        net::Done::Text { res: Err(e), .. } => { s.notice = Some(format!("Não foi possível abrir o texto: {e}")); true }
         net::Done::HistoryAround { channel, target, res: Ok(msgs) } => {
             s.chat.load_around(&channel, msgs);
             s.pending_jump = Some((channel, target));
@@ -571,7 +589,7 @@ fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
     changed |= s.call.poll(s.gateway.as_ref());
     // A message was just sent: follow the end, even if the list was scrolled up.
     if std::mem::take(&mut s.stick_to_bottom) && let Some(cid) = s.chat.channel_id() {
-        tx.scroll_to_bottom(format!("scroll-{cid}"));
+        tx.scroll_to_bottom_instant(format!("scroll-{cid}"));
         changed = true;
     }
     if s.picker.poll() { picker_images(s); changed = true }
@@ -626,6 +644,7 @@ pub fn join_voice(s: &mut State, channel: &str) {
 /// Starts (or joins) the DM call of the open direct-message channel.
 pub fn start_dm_call(s: &mut State, channel: &str) {
     let peer = s.chat.dms.iter().find(|c| c.id == channel).and_then(|c| c.peer.as_ref()).map(|p| p.id.clone());
+    s.text_view = None;
     if let Some(p) = peer { s.net.ring_call(channel, vec![p]) }
     s.incoming_call = None;
     s.call.join(s.gateway.as_ref(), None, channel);
@@ -662,28 +681,43 @@ fn remember(s: &State) {
     if s.session.is_some() && let Some(pos) = s.chat.position() { store::save_nav(&pos) }
 }
 
+/// Keeps the draft in the channel it was typed in and brings the new channel's own draft back.
+fn switch_draft(s: &mut State, old: Option<String>) {
+    if let Some(old) = old { s.drafts.insert(old, s.draft.text.clone()); }
+    let text = s.chat.channel_id().and_then(|c| s.drafts.get(c)).cloned().unwrap_or_default();
+    s.draft = TextEdit::new(text);
+    s.draft_mode = Draft { reply: None, editing: None };
+    s.text_view = None;
+    s.search.open = false;
+}
+
 pub fn open_guild(s: &mut State, g: Option<usize>) {
+    let old = s.chat.channel_id().map(String::from);
     s.call.view = false;
     s.visible = 0..0;
+    s.text_view = None;
     s.chat.open_guild(g);
+    switch_draft(s, old);
     reconcile(s);
     remember(s);
 }
 
 pub fn open_channel(s: &mut State, i: usize) {
+    let old = s.chat.channel_id().map(String::from);
     s.call.view = false;
     s.visible = 0..0;
-    s.draft_mode.reply = None;
-    if s.draft_mode.editing.take().is_some() { s.draft.clear() }
     s.chat.open_channel(i);
+    switch_draft(s, old);
     reconcile(s);
     remember(s);
 }
 
 pub fn open_voice_chat(s: &mut State, i: usize) {
+    let old = s.chat.channel_id().map(String::from);
     s.call.view = false;
     s.visible = 0..0;
     s.chat.open_voice_chat(i);
+    switch_draft(s, old);
     reconcile(s);
 }
 
@@ -734,6 +768,18 @@ pub fn send(s: &mut State) {
     if !s.attachments.is_empty() { return send_attachments(s, body) }
     if body.is_empty() { return }
     let Some(cid) = s.chat.channel_id().map(String::from) else { return };
+    s.drafts.remove(&cid);
+    // Past the server's message limit it goes as a text file, like the web client.
+    if body.chars().count() > 2000 && s.net.has_api() {
+        let file = crate::attach::Outgoing { name: "mensagem.txt".into(), content_type: "text/plain".into(), data: body.into_bytes().into() };
+        s.notice = None;
+        s.draft_mode.reply = None;
+        s.draft_mode.editing = None;
+        s.net.send_files(&cid, "", vec![file]);
+        s.stick_to_bottom = true;
+        s.draft.clear();
+        return;
+    }
     if let Some(id) = s.draft_mode.editing.clone() {
         s.notice = None;
         if s.net.has_api() { s.net.edit_message(&cid, &id, &body) }
@@ -744,6 +790,7 @@ pub fn send(s: &mut State) {
     }
     if let Some(reply) = s.draft_mode.reply.take() {
         send_reply_body(s, body, reply);
+        s.stick_to_bottom = true;
         s.draft.clear();
         return;
     }
@@ -1045,7 +1092,7 @@ fn main() {
         setup: Some(setup),
         poll: Some(poll),
         on_key: Some(|s, ev, _| matches!(ev.key, rune::Key::Escape) && ui::settings::escape(s)),
-        ..AppSpec::new("Fluxer", (1100.0, 700.0), State::default, ui::view)
+        ..AppSpec::new("AirFluxer", (1100.0, 700.0), State::default, ui::view)
     };
     rune::run(spec);
 }
