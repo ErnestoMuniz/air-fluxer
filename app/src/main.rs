@@ -156,6 +156,9 @@ pub struct State {
     stick_to_bottom: bool,
     /// A long message opened as a text file (title, body).
     pub text_view: Option<(String, String)>,
+    /// A newer release announced by GitHub, and whether the update is being installed.
+    pub update: Option<(String, String)>,
+    pub updating: bool,
     /// Unsent text per channel, so a draft stays in the conversation it was typed in.
     drafts: std::collections::HashMap<String, String>,
     pub profile: Option<Prof>,
@@ -236,7 +239,7 @@ impl Default for State {
         State {
             rail_hover: None, settings_open: false, pf: Default::default(), prof: [TextEdit::new(""), TextEdit::new(""), TextEdit::new(""), TextEdit::new("")],
             picker: Default::default(), prefs: prefs.clone(), plus_open: false, msg_hover: None, react_picker: None, highlighted: None, pointer: rune::Live::new([0.0, 0.0]), member_search: TextEdit::new(""), my_status: prefs.status, status_menu: false, video: None, customize_open: false, notice: None,
-            ctx: None, msg_menu: None, draft_mode: Draft { reply: None, editing: None }, acked: None, search: Default::default(), pending_jump: None, incoming_call: None, stick_to_bottom: false, text_view: None, drafts: Default::default(), profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
+            ctx: None, msg_menu: None, draft_mode: Draft { reply: None, editing: None }, acked: None, search: Default::default(), pending_jump: None, incoming_call: None, stick_to_bottom: false, text_view: None, update: None, updating: false, drafts: Default::default(), profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
             intro: 0.0, intro_t0: None, chat: demo_chat(), net: net::Net::default(), draft: TextEdit::new(""), attachments: Vec::new(), gateway: None, subscribed: None, synced_guilds: Default::default(), show_members: true, call: Default::default(), focused: true, visible: 0..0, typing_wake: false, thumb: Default::default(),
         }
     }
@@ -348,6 +351,7 @@ fn setup(s: &mut State, wake: Waker) {
     s.picker.set_waker(wake.clone());
     s.wake = Some(wake.clone());
     if std::env::var_os("FLUXER_DEMO").is_some() { return }
+    s.net.check_update(env!("CARGO_PKG_VERSION"));
     match store::load() {
         Some(saved) => start_session(s, saved, wake),
         None => s.screen = Screen::Login,
@@ -463,6 +467,10 @@ fn on_net(s: &mut State, d: net::Done) -> bool {
         net::Done::Acked(_) => false,
         net::Done::AvatarSaved(res) => { ui::settings::on_avatar(s, res); true }
         net::Done::TimezoneSaved(res) => { ui::settings::on_timezone(s, res); true }
+        net::Done::Update(Ok(Some(u))) => { s.update = Some(u); true }
+        net::Done::Update(Ok(None)) | net::Done::Update(Err(_)) => false,
+        net::Done::UpdateFailed(Err(e)) => { s.updating = false; s.notice = Some(format!("Não foi possível atualizar: {e}")); true }
+        net::Done::UpdateFailed(Ok(_)) => false,
         net::Done::Search { query, res } => { on_search(s, query, res); true }
         net::Done::Text { name, res: Ok(body) } => { s.text_view = Some((name, body)); true }
         net::Done::Text { res: Err(e), .. } => { s.notice = Some(format!("Não foi possível abrir o texto: {e}")); true }

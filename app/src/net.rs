@@ -101,6 +101,10 @@ pub enum Done {
     AvatarSaved(Result<serde_json::Value, String>),
     /// The account's profile time zone.
     TimezoneSaved(Result<serde_json::Value, String>),
+    /// A newer release (tag, DMG url) or none.
+    Update(Result<Option<(String, String)>, String>),
+    /// The in-app update failed (success exits the process).
+    UpdateFailed(Result<(), String>),
     /// Messages matching a channel search; the query is echoed so a late answer for an older
     /// query does not replace the newer results.
     Search { query: String, res: Result<api::SearchOutcome, String> },
@@ -221,6 +225,28 @@ impl Net {
         self.job(move || fluxer_client::api::fetch_bytes(&u, 2 * 1024 * 1024)
             .map(|b| String::from_utf8_lossy(&b).to_string()).map_err(|e| e.message),
             move |res| Done::Text { name: echo, res });
+    }
+
+    /// Checks GitHub for a newer release than `current` (a DMG asset).
+    pub fn check_update(&self, current: &str) {
+        let cur = current.to_string();
+        self.job(move || {
+            let body = fluxer_client::api::fetch_bytes("https://api.github.com/repos/ErnestoMuniz/air-fluxer/releases/latest", 2 << 20)
+                .map_err(|e| e.message)?;
+            let v: serde_json::Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+            let tag = v["tag_name"].as_str().unwrap_or("").trim_start_matches('v').to_string();
+            let url = v["assets"].as_array().into_iter().flatten()
+                .find(|a| a["name"].as_str().is_some_and(|n| n.ends_with(".dmg")))
+                .and_then(|a| a["browser_download_url"].as_str()).map(String::from);
+            let num = |s: &str| -> Vec<u64> { s.split('.').map(|p| p.parse().unwrap_or(0)).collect() };
+            let newer = num(&tag) > num(&cur);
+            Ok(if newer { url.map(|u| (tag, u)) } else { None })
+        }, Done::Update);
+    }
+
+    /// Downloads the DMG, replaces the running bundle in place, and relaunches it.
+    pub fn apply_update(&self, url: String, version: String) {
+        self.job(move || install_update(&url, &version), Done::UpdateFailed);
     }
 
     /// Starts ringing the other people of a DM call.
@@ -551,4 +577,43 @@ mod tests {
         assert_eq!(hits.load(std::sync::atomic::Ordering::Relaxed), 1, "asked twice, downloaded once");
         assert!(!net.busy_with_images());
     }
+}
+
+/// Downloads `url`, replaces the bundle this executable lives in, and relaunches it.
+fn install_update(url: &str, version: &str) -> Result<(), String> {
+    let bytes = fluxer_client::api::fetch_bytes(url, 300 << 20).map_err(|e| e.message)?;
+    let tmp = std::env::temp_dir();
+    let dmg = tmp.join(format!("AirFluxer-{version}.dmg"));
+    let mnt = tmp.join(format!("AirFluxer-{version}-mnt"));
+    std::fs::write(&dmg, &bytes).map_err(|e| format!("não foi possível salvar o DMG: {e}"))?;
+    let _ = std::fs::create_dir_all(&mnt);
+    let ok = std::process::Command::new("hdiutil")
+        .args(["attach", "-nobrowse", "-mountpoint"]).arg(&mnt).arg(&dmg)
+        .status().map(|s| s.success()).unwrap_or(false);
+    if !ok { return Err("não foi possível abrir o DMG".into()) }
+    let cleanup = || { let _ = std::process::Command::new("hdiutil").args(["detach", "-force"]).arg(&mnt).status(); };
+    let app = std::fs::read_dir(&mnt).ok().and_then(|it| it.flatten()
+        .map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "app")))
+        .ok_or_else(|| "o DMG não contém o AirFluxer.app".to_string())?;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let bundle = exe.parent().and_then(|p| p.parent()).and_then(|p| p.parent())
+        .ok_or_else(|| "não sei onde o app está instalado".to_string())?.to_path_buf();
+    let staged = bundle.parent().ok_or_else(|| "pasta do app inválida".to_string())?.join("AirFluxer.app.new");
+    let _ = std::fs::remove_dir_all(&staged);
+    let copied = std::process::Command::new("ditto").arg(&app).arg(&staged).status().map(|s| s.success()).unwrap_or(false);
+    if !copied { cleanup(); return Err("não foi possível copiar a nova versão".into()) }
+    let old = bundle.parent().unwrap().join("AirFluxer.app.old");
+    let _ = std::fs::remove_dir_all(&old);
+    if std::fs::rename(&bundle, &old).is_err() { cleanup(); return Err("sem permissão para substituir o app".into()) }
+    if std::fs::rename(&staged, &bundle).is_err() {
+        let _ = std::fs::rename(&old, &bundle);
+        cleanup();
+        return Err("sem permissão para instalar a nova versão".into());
+    }
+    let _ = std::fs::remove_dir_all(&old);
+    cleanup();
+    let _ = std::fs::remove_file(&dmg);
+    let _ = std::fs::remove_dir(&mnt);
+    std::process::Command::new("open").arg(&bundle).spawn().map_err(|e| format!("não foi possível reabrir o app: {e}"))?;
+    std::process::exit(0);
 }

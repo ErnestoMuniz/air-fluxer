@@ -1448,6 +1448,25 @@ fn incoming_call_bar(s: &State) -> El {
             }))
 }
 
+/// The band above the chat while a newer release is waiting.
+fn update_bar(s: &State) -> El {
+    if !s.updating && s.update.is_none() { return el().size(0.0, 0.0) }
+    let (p, t) = (pal(), crate::appearance::theme());
+    if s.updating {
+        return row().key("update-bar").w_full().h(40.0).px(16.0).center_y().gap(8.0).fill(p.select)
+            .child(text("Atualizando o AirFluxer…".to_string()).font(type_::LABEL).color(t.text));
+    }
+    let (version, url) = s.update.clone().unwrap();
+    row().key("update-bar").w_full().h(40.0).px(16.0).center_y().gap(10.0).fill(p.brand)
+        .child(text(format!("AirFluxer {version} está disponível")).font(type_::TITLE).color(t.knob).grow(1.0))
+        .child(row().key("update-apply").h(26.0).px(12.0).radius(radius::SM).center().fill(t.knob)
+            .child(text("Atualizar".to_string()).font(type_::LABEL).color(p.brand))
+            .cursor(rune::Cursor::Pointer).on_press(move |s: &mut State| {
+                s.updating = true;
+                s.net.apply_update(url.clone(), version.clone());
+            }))
+}
+
 fn main_view(s: &State, stage: Option<[f32; 2]>) -> El {
     let (p, t) = (pal(), crate::appearance::theme());
     let prefix = if s.chat.nav.guild.is_some() { "#" } else { "@" };
@@ -1484,11 +1503,11 @@ fn main_view(s: &State, stage: Option<[f32; 2]>) -> El {
     let composer = compose::composer(s).pin(Some(0.0), None, Some(0.0), Some(0.0));
     let mosaic = s.call.view && s.call.active();
     let main = if mosaic {
-        col().grow(1.0).h_full().min_w(0.0).fill(p.chat).child(incoming_call_bar(s)).child(header).child(el().w_full().h(1.0).fill(p.line)).child(mosaic::view(s, stage))
+        col().grow(1.0).h_full().min_w(0.0).fill(p.chat).child(update_bar(s)).child(incoming_call_bar(s)).child(header).child(el().w_full().h(1.0).fill(p.line)).child(mosaic::view(s, stage))
     } else if s.search.open {
-        col().grow(1.0).h_full().min_w(0.0).fill(p.chat).child(incoming_call_bar(s)).child(header).child(el().w_full().h(1.0).fill(p.line)).child(search_view(s))
+        col().grow(1.0).h_full().min_w(0.0).fill(p.chat).child(update_bar(s)).child(incoming_call_bar(s)).child(header).child(el().w_full().h(1.0).fill(p.line)).child(search_view(s))
     } else {
-        col().grow(1.0).h_full().min_w(0.0).fill(p.chat).child(incoming_call_bar(s)).child(header).child(el().w_full().h(1.0).fill(p.line))
+        col().grow(1.0).h_full().min_w(0.0).fill(p.chat).child(update_bar(s)).child(incoming_call_bar(s)).child(header).child(el().w_full().h(1.0).fill(p.line))
             .child(voice_panel(s)).child(message_list(s)).child(composer)
     };
     let mut all = row().w_full().h_full().fill(p.rail).child(guild_rail(s)).child(panel_divider()).child(channel_list(s)).child(panel_divider()).child(main);
