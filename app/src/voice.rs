@@ -152,6 +152,9 @@ async fn start_screen(room: &Room, height: u32, fps: u32, display: u32) -> Resul
     let seen = frames.clone();
     let max_w = (max_h * 16 / 9) as i32;
     let max_hi = max_h as i32;
+    // WebRTC drops a stream whose frames never advance their timestamp.
+    let step_us = 1_000_000 / fps.max(1) as i64;
+    let mut timestamp = 0i64;
     let stop = crate::screen_macos::start(display, fps, move |frame| {
         seen.fetch_add(1, Ordering::Relaxed);
         let (mut w, mut h) = (frame.width as i32, frame.height as i32);
@@ -168,7 +171,10 @@ async fn start_screen(room: &Room, height: u32, fps: u32, display: u32) -> Resul
             } else { ((w * max_hi / h).max(2) & !1, max_hi) };
             buffer.scale(sw, sh)
         } else { buffer };
-        source.capture_frame(&VideoFrame::new(VideoRotation::VideoRotation0, buffer));
+        timestamp += step_us;
+        let mut vf = VideoFrame::new(VideoRotation::VideoRotation0, buffer);
+        vf.timestamp_us = timestamp;
+        source.capture_frame(&vf);
     });
     Ok(Screen { sid, stop, frames, since: std::time::Instant::now() })
 }
