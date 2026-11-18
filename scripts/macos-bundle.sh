@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds the macOS app bundle: target/release/Fluxer.app.
+# Builds the macOS app bundle: target/release/AirFluxer.app.
 #
 # The bundle is ad-hoc signed (or signed with $CODESIGN_IDENTITY), which is enough to run it on
 # this Mac and to keep the microphone permission across launches. Shipping it to other people
@@ -9,7 +9,7 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
-APP="$ROOT/target/release/Fluxer.app"
+APP="$ROOT/target/release/AirFluxer.app"
 VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' app/Cargo.toml | head -n 1)
 
 # UNIVERSAL=1 builds both Apple architectures and joins them with lipo (needs

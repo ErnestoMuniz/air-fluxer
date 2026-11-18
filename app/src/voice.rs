@@ -124,8 +124,9 @@ struct Live {
 
 struct Remote { identity: String, track: String, task: tokio::task::JoinHandle<()> }
 
-/// A screen share this account is publishing: its sid, and how to stop capturing.
-struct Screen { sid: TrackSid, stop: Arc<AtomicBool> }
+/// A screen share this account is publishing: its sid, how to stop capturing, and whether any
+/// frame ever arrived (a cancelled picker must not leave the LIVE badge on).
+struct Screen { sid: TrackSid, stop: Arc<AtomicBool>, frames: Arc<std::sync::atomic::AtomicUsize>, since: std::time::Instant }
 
 impl Drop for Screen { fn drop(&mut self) { self.stop.store(true, Ordering::Relaxed) } }
 
@@ -154,6 +155,8 @@ async fn start_screen(room: &Room, height: u32) -> Result<Screen, String> {
     let sid = publication.sid();
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
+    let frames = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = frames.clone();
     std::thread::Builder::new().name("fluxer-screen".into()).spawn(move || {
         let mut options = DesktopCapturerOptions::new(DesktopCaptureSourceType::Screen);
         options.set_include_cursor(true);
@@ -163,6 +166,7 @@ async fn start_screen(room: &Room, height: u32) -> Result<Screen, String> {
         };
         capturer.start_capture(None, move |result| {
             let Ok(frame) = result else { return };
+            seen.fetch_add(1, Ordering::Relaxed);
             let (mut w, mut h) = (frame.width(), frame.height());
             if w < 2 || h < 2 { return }
             w &= !1;
@@ -187,7 +191,7 @@ async fn start_screen(room: &Room, height: u32) -> Result<Screen, String> {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }).map_err(|e| format!("não foi possível iniciar a captura: {e}"))?;
-    Ok(Screen { sid, stop })
+    Ok(Screen { sid, stop, frames, since: std::time::Instant::now() })
 }
 
 impl Drop for Live {
@@ -396,6 +400,16 @@ async fn engine(mut cmds: UnboundedReceiver<Cmd>, out: mpsc::Sender<Ev>, wake: W
                     && let Ok(all) = room.get_stats().await {
                     let stats: Vec<_> = all.publisher_stats.into_iter().chain(all.subscriber_stats).collect();
                     if let Some(ms) = rtt_ms(&stats) { send(Ev::Ping(ms)) }
+                }
+                // A cancelled picker or an empty capture must not leave LIVE on forever.
+                let stale = live.as_ref().and_then(|l| l.screen.as_ref())
+                    .filter(|s| s.frames.load(Ordering::Relaxed) == 0 && s.since.elapsed() > std::time::Duration::from_secs(4))
+                    .map(|s| s.sid.clone());
+                if let Some(sid) = stale && let Some(l) = live.as_mut() {
+                    l.screen = None;
+                    let _ = l.room.local_participant().unpublish_track(&sid).await;
+                    send(Ev::Sharing(false));
+                    send(Ev::Notice("A transmissão não produziu imagem (permissão de tela ou seletor cancelado).".into()));
                 }
             }
             cmd = cmds.recv() => {

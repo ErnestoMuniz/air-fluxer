@@ -152,6 +152,8 @@ pub struct State {
     pub incoming_call: Option<String>,
     /// A message was just sent: the next poll asks the list to follow the bottom.
     stick_to_bottom: bool,
+    /// A long message opened as a text file (title, body).
+    pub text_view: Option<(String, String)>,
     pub profile: Option<Prof>,
     /// Profiles fetched so far, by `net::profile_key`.
     pub profiles: std::collections::HashMap<String, fluxer_client::api::Profile>,
@@ -230,7 +232,7 @@ impl Default for State {
         State {
             rail_hover: None, settings_open: false, pf: Default::default(), prof: [TextEdit::new(""), TextEdit::new(""), TextEdit::new(""), TextEdit::new("")],
             picker: Default::default(), prefs: prefs.clone(), plus_open: false, msg_hover: None, react_picker: None, highlighted: None, pointer: rune::Live::new([0.0, 0.0]), member_search: TextEdit::new(""), my_status: prefs.status, status_menu: false, video: None, customize_open: false, notice: None,
-            ctx: None, msg_menu: None, draft_mode: Draft { reply: None, editing: None }, acked: None, search: Default::default(), pending_jump: None, incoming_call: None, stick_to_bottom: false, profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
+            ctx: None, msg_menu: None, draft_mode: Draft { reply: None, editing: None }, acked: None, search: Default::default(), pending_jump: None, incoming_call: None, stick_to_bottom: false, text_view: None, profile: None, profiles: Default::default(), screen: Screen::Main, auth: auth::Auth::default(), session: None, wake: None, status: Status::Demo,
             intro: 0.0, intro_t0: None, chat: demo_chat(), net: net::Net::default(), draft: TextEdit::new(""), attachments: Vec::new(), gateway: None, subscribed: None, synced_guilds: Default::default(), show_members: true, call: Default::default(), focused: true, visible: 0..0, typing_wake: false, thumb: Default::default(),
         }
     }
@@ -1045,7 +1047,7 @@ fn main() {
         setup: Some(setup),
         poll: Some(poll),
         on_key: Some(|s, ev, _| matches!(ev.key, rune::Key::Escape) && ui::settings::escape(s)),
-        ..AppSpec::new("Fluxer", (1100.0, 700.0), State::default, ui::view)
+        ..AppSpec::new("AirFluxer", (1100.0, 700.0), State::default, ui::view)
     };
     rune::run(spec);
 }

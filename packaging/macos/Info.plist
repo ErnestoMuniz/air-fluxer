@@ -5,9 +5,9 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>pt_BR</string>
     <key>CFBundleDisplayName</key>
-    <string>Fluxer</string>
+    <string>AirFluxer</string>
     <key>CFBundleName</key>
-    <string>Fluxer</string>
+    <string>AirFluxer</string>
     <key>CFBundleExecutable</key>
     <string>fluxer-app</string>
     <key>CFBundleIdentifier</key>

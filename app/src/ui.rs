@@ -247,13 +247,13 @@ fn channel_row(s: &State, i: usize, ch: &Channel) -> El {
     let lead = match &ch.peer {
         Some(u) => {
             let status = s.chat.roster.status_of(&u.id).to_string();
-            row().size(24.0, 24.0).child(avatar(s, u, 24.0))
-                .child(el().absolute(15.0, 15.0).size(9.0, 9.0).radius(4.5).fill(status_color(&status)).border(2.0, p.side))
+            row().size(32.0, 32.0).child(avatar(s, u, 32.0))
+                .child(el().absolute(23.0, 23.0).size(10.0, 10.0).radius(5.0).fill(status_color(&status)).border(2.0, p.side))
         }
         None => text(if s.chat.nav.guild.is_some() { "#" } else { "@" }).font(type_::TITLE).color(t.text_secondary).w(24.0),
     };
     let name_color = if active || ch.unread > 0 || ch.new { t.text } else { t.text_secondary };
-    row().key(format!("ch-{i}")).h(36.0).px(10.0).gap(10.0).center_y().radius(radius::SM)
+    row().key(format!("ch-{i}")).h(40.0).px(10.0).gap(10.0).center_y().radius(radius::SM)
         .fill(if active { p.select } else { oklcha(0.0, 0.0, 0.0, 0.0) }).hover(if active { p.select } else { p.hover })
         .child(lead)
         .child(text(ch.name.clone()).font(if ch.unread > 0 || ch.new { type_::TITLE } else { type_::BODY }).color(name_color).grow(1.0))
@@ -471,6 +471,27 @@ fn status_scrim(s: &State) -> El {
     if !s.status_menu { return el().size(0.0, 0.0) }
     el().key("status-scrim").pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
         .on_press(|s: &mut State| s.status_menu = false)
+}
+
+/// The full text of a long message, opened from its "mensagem.txt" card.
+fn text_viewer(s: &State) -> El {
+    let Some((title, body)) = &s.text_view else { return el().size(0.0, 0.0) };
+    let (p, t) = (pal(), crate::appearance::theme());
+    let scrim = el().key("text-view-scrim").pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+        .fill(oklcha(0.0, 0.0, 0.0, 0.78)).on_press(|s: &mut State| s.text_view = None);
+    let card = col().key("text-view").w(720.0).h(560.0).radius(radius::LG).fill(p.side).border(1.0, p.line)
+        .shadow(8.0, 32.0, t.shadow).on_press(|_: &mut State| {})
+        .child(row().h(52.0).px(16.0).center_y().gap(10.0)
+            .child(rune::icon(&PAPERCLIP, 18.0).color(t.text_secondary))
+            .child(text(title.clone()).font(type_::TITLE).color(t.text).grow(1.0).truncate())
+            .child(row().key("text-view-close").size(30.0, 30.0).radius(radius::SM).center().hover(p.hover)
+                .child(rune::icon(&X, 18.0).color(t.text_secondary)).cursor(rune::Cursor::Pointer)
+                .on_press(|s: &mut State| s.text_view = None)))
+        .child(el().w_full().h(1.0).fill(p.line))
+        .child(col().grow(1.0).min_h(0.0).px(16.0).py(12.0)
+            .child(text(body.clone()).font(type_::BODY).color(t.text).wrap_anywhere().w_full())
+            .scroll(ScrollSpec { stick_bottom: false }).grow(1.0).min_h(0.0));
+    row().key("text-view-layer").pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).center().child(scrim).child(card)
 }
 
 /// The small card that explains the voice signal icon: the room's round-trip time.
@@ -1098,7 +1119,19 @@ fn message(s: &State, m: &Msg, prev: Option<&Msg>) -> El {
     } else if m.delivery == Delivery::Pending {
         body = body.child(text("enviando…").font(type_::LABEL).color(t.text_secondary));
     }
-    if !m.body.is_empty() && !is_bare_gif_link(m) {
+    let long = m.body.chars().count() > 1200 || m.body.lines().count() > 12;
+    if long {
+        let title = format!("{} — mensagem.txt", m.author.display());
+        let full = m.body.clone();
+        body = body.child(row().key(format!("long-{}", m.id)).w_full().max_w(420.0).px(12.0).py(10.0).gap(10.0).radius(8.0)
+            .fill(p.side).border(1.0, p.line)
+            .child(rune::icon(&PAPERCLIP, 22.0).color(t.text_secondary))
+            .child(col().gap(1.0).grow(1.0)
+                .child(text("mensagem.txt".to_string()).font(type_::BODY).color(t.text))
+                .child(text(format!("{} KB — clique para abrir", (m.body.len() + 1023) / 1024)).font(type_::LABEL).color(t.text_secondary)))
+            .cursor(rune::Cursor::Pointer)
+            .on_press(move |s: &mut State| s.text_view = Some((title.clone(), full.clone()))));
+    } else if !m.body.is_empty() && !is_bare_gif_link(m) {
         let mut line = row().gap(6.0).child(message_text(s, m, m.delivery != Delivery::Sent).grow(1.0).min_w(0.0));
         if m.edited { line = line.child(text("(editado)").font(type_::LABEL).color(t.text_secondary.alpha(0.6))) }
         body = body.child(line);
@@ -1452,7 +1485,7 @@ fn main_view(s: &State, stage: Option<[f32; 2]>) -> El {
     // A mention's card anchors beside this marker at the point the pointer was on.
     let mention_anchor = s.profile.as_ref().and_then(|p| p.at)
         .map_or_else(|| el().size(0.0, 0.0), |(x, y)| el().key("mention-anchor").absolute(x, y).size(1.0, 1.0));
-    all.child(menu_scrim(s)).child(user_menu_scrim(s)).child(msg_menu_scrim(s)).child(status_scrim(s)).child(profile_scrim(s)).child(dock(s)).child(audio_menu(s)).child(ctx_point(s)).child(msg_point(s)).child(user_menu(s)).child(message_menu(s)).child(status_menu(s)).child(mention_anchor).child(profile_card(s)).child(ping_tip(s)).child(settings::dialog(s))
+    all.child(menu_scrim(s)).child(user_menu_scrim(s)).child(msg_menu_scrim(s)).child(status_scrim(s)).child(profile_scrim(s)).child(dock(s)).child(audio_menu(s)).child(ctx_point(s)).child(msg_point(s)).child(user_menu(s)).child(message_menu(s)).child(status_menu(s)).child(mention_anchor).child(profile_card(s)).child(ping_tip(s)).child(text_viewer(s)).child(settings::dialog(s))
         .on_pointer_move_local(|s: &mut State, p, tx| { s.pointer.set([p.window_x, p.window_y]); tx.live_only() })
         .on_window_focus(|s: &mut State, focused, _| set_focus(s, focused))
 }
