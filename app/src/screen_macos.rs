@@ -66,7 +66,7 @@ pub fn grab(display: u32) -> Option<Frame> {
         let rect = CGDisplayBounds(display);
         // On-screen windows only, no desktop elements, whole display.
         let image = CGWindowListCreateImage(rect, 1, 0, 0);
-        if image.is_null() { return None }
+        if image.is_null() { return grab_cli(display) }
         let (width, height, stride) = (CGImageGetWidth(image), CGImageGetHeight(image), CGImageGetBytesPerRow(image));
         let provider = CGImageGetDataProvider(image);
         if provider.is_null() { CFRelease(image as *const c_void); return None }
@@ -98,4 +98,20 @@ pub fn start(display: u32, fps: u32, mut on_frame: impl FnMut(Frame) + Send + 's
         }
     }).ok();
     stop
+}
+
+/// Fallback when CGWindowList refuses to hand over an image (macOS 26+/permission quirks): ask the
+/// system's `screencapture` for one frame. Slower, but it proves and keeps the video path alive.
+fn grab_cli(display: u32) -> Option<Frame> {
+    let path = std::env::temp_dir().join(format!("airfluxer-{display}.png"));
+    let ok = std::process::Command::new("/usr/sbin/screencapture")
+        .args(["-x", "-D", &display.to_string(), "-t", "png"]).arg(&path)
+        .status().ok()?.success();
+    if !ok { return None }
+    let image = image::open(&path).ok()?.to_rgba8();
+    let (w, h) = image.dimensions();
+    // BGRA, the byte order the I420 converter expects from CGWindowList.
+    let mut data = Vec::with_capacity((w * h * 4) as usize);
+    for p in image.pixels() { let [r, g, b, a] = p.0; data.extend_from_slice(&[b, g, r, a]); }
+    Some(Frame { data, width: w as usize, height: h as usize, stride: (w * 4) as usize })
 }
