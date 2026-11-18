@@ -1246,7 +1246,8 @@ fn message_list(s: &State) -> El {
     // The message box floats over the list, so a spacer under the rows keeps its height clear at
     // the bottom and the last message still scrolls up above it.
     let draft_room = if s.draft_mode.reply.is_some() || s.draft_mode.editing.is_some() { 30.0 } else { 0.0 };
-    let composer_room = draft_room + if typing_notice(s).is_some() { 94.0 } else { 72.0 };
+    let draft_rows = (s.draft.text.chars().count() / 55 + 1).clamp(1, 6) as f32;
+    let composer_room = draft_room + (draft_rows - 1.0) * 20.0 + if typing_notice(s).is_some() { 94.0 } else { 72.0 };
     let content = col().w_full().child(rows).child(el().w_full().h(composer_room));
     // A fresh scroll area per channel, so each one opens at its newest message.
     // The thumb floats over the viewport's right edge, in the margin beside the message box.

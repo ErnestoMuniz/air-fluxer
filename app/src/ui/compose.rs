@@ -40,19 +40,36 @@ pub fn composer(s: &State) -> El {
         .child(text("GIF").font(rune::tok::TextStyle::new(10.0, 800.0)).color(tint(s.picker.open == Some(Tab::Gifs))));
     // As tall as the account bar at the bottom left, and frosted: a little translucent over the
     // chat with the blur behind it.
-    let mut bar = row().key("composer-box").h(BOX_H).px(8.0).gap(2.0).center_y().radius(10.0)
+    // The box grows with what is typed (up to six rows), like the web client's composer.
+    let chars = s.draft.text.chars().count();
+    let rows = (chars / 55 + 1).clamp(1, 6);
+    let box_h = BOX_H + (rows as f32 - 1.0) * 20.0;
+    let k = Kit::neutral(!crate::appearance::dark());
+    let mut bar = row().key("composer-box").h(box_h).px(8.0).gap(2.0).center_y().radius(10.0)
         .fill(floating_fill(0.75)).backdrop_blur(10.0)
         .child(row().key("plus-btn").size(34.0, 34.0).radius(radius::SM).center().fill(if s.plus_open { p.select } else { clear() }).hover(p.select)
             .child(rune::icon(&PLUS, 22.0).color(tint(s.plus_open)))
             .cursor(rune::Cursor::Pointer)
             .on_press(|s: &mut State| { let open = !s.plus_open; close_all(s); s.plus_open = open }))
-        .child(text_input(&s.draft, type_::BODY)
-            .key("composer")
-            .placeholder(place, t.text_secondary)
+        .child(TextArea::new(&s.draft)
+            .placeholder(place)
+            .rows(rows)
+            .auto_grow(1, 6)
+            .max_height(160.0)
+            .wrap_anywhere()
+            .width(None)
             .on_edit(|s: &mut State| &mut s.draft)
-            .on_submit(|s: &mut State, tx| { send(s); tx.focus("composer", false) })
+            .on_key(|s: &mut State, ev: &rune::KeyEvent, tx: &mut rune::Tx| {
+                if ev.key == rune::Key::Enter && !ev.mods.shift {
+                    send(s);
+                    tx.focus("composer", false);
+                    true
+                } else { false }
+            })
+            .build(&k)
+            .key("composer")
             .on_input_paste(|s: &mut State, content, _| crate::attach::paste(s, content))
-            .grow(1.0).min_w(0.0).px(8.0).py(12.0))
+            .grow(1.0).min_w(0.0).px(8.0).py(10.0))
         .child(btn("btn-gifs", Tab::Gifs, prefs.gifs_button, gif_icon))
         .child(btn("btn-media", Tab::Media, prefs.media_button, rune::icon(&IMAGE, 22.0).color(tint(s.picker.open == Some(Tab::Media)))))
         .child(btn("btn-stickers", Tab::Stickers, prefs.stickers_button, rune::icon(&STICKER, 22.0).color(tint(s.picker.open == Some(Tab::Stickers)))))
