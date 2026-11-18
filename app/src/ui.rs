@@ -1128,10 +1128,7 @@ fn message(s: &State, m: &Msg, prev: Option<&Msg>) -> El {
             .child({ let u = m.author.clone(); opens_profile(text(name_in(s, &m.author)).font(type_::TITLE).color(name_color(s, &m.author.id)).on_secondary_press(move |s: &mut State, p, _| open_user_menu(s, &u, p)), &m.author, format!("pn-{}", m.id)) });
         if let Some(ic) = top_role_el(s, &m.author) { head = head.child(ic) }
         if let Some(ts) = m.ts { head = head.child(text(crate::clock::full(ts, now)).font(type_::LABEL).color(t.text_secondary.alpha(0.75))) }
-        if m.delivery == Delivery::Pending { head = head.child(text("enviando…").font(type_::LABEL).color(t.text_secondary)) }
         body = body.child(head);
-    } else if m.delivery == Delivery::Pending {
-        body = body.child(text("enviando…").font(type_::LABEL).color(t.text_secondary));
     }
     let long = m.body.chars().count() > 1200 || m.body.lines().count() > 12;
     if long {

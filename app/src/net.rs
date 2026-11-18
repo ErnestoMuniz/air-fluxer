@@ -354,7 +354,7 @@ impl Net {
     pub fn send_files(&self, channel: &str, content: &str, files: Vec<crate::attach::Outgoing>) {
         let Some(api) = self.api.clone() else { return };
         let (c, text) = (channel.to_string(), content.to_string());
-        let nonce = crate::clock::now_ms().to_string();
+        let nonce = format!("{}{}", crate::clock::now_ms(), { static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0); N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) });
         self.job(move || {
             let list: Vec<(&str, &str, &[u8])> = files.iter().map(|f| (f.name.as_str(), f.content_type.as_str(), &f.data[..])).collect();
             api.send_files(&c, &text, &list, &nonce).map(|_| ()).map_err(|e| e.message)

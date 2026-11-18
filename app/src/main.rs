@@ -761,16 +761,14 @@ pub fn send(s: &mut State) {
     s.drafts.remove(&cid);
     // Past the server's message limit it goes as a text file, like the web client.
     if body.chars().count() > 2000 && s.net.has_api() {
-        let path = std::env::temp_dir().join("mensagem.txt");
-        if std::fs::write(&path, body.as_bytes()).is_ok() {
-            s.notice = None;
-            s.draft_mode.reply = None;
-            s.draft_mode.editing = None;
-            s.net.send_file(&cid, "", path);
-            s.stick_to_bottom = true;
-            s.draft.clear();
-            return;
-        }
+        let file = crate::attach::Outgoing { name: "mensagem.txt".into(), content_type: "text/plain".into(), data: body.into_bytes().into() };
+        s.notice = None;
+        s.draft_mode.reply = None;
+        s.draft_mode.editing = None;
+        s.net.send_files(&cid, "", vec![file]);
+        s.stick_to_bottom = true;
+        s.draft.clear();
+        return;
     }
     if let Some(id) = s.draft_mode.editing.clone() {
         s.notice = None;
