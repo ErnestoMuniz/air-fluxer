@@ -48,6 +48,10 @@ pub struct Call {
     pub ping_tip: bool,
     /// This account is publishing its screen.
     pub sharing: bool,
+    /// The pre-share HUD: sources the capturer offers, the chosen one, and whether it is open.
+    pub share_hud: bool,
+    pub screen_sources: Vec<String>,
+    pub share_source: usize,
     /// Microphone, speakers, volumes and noise suppression; saved on every change.
     pub settings: Settings,
     pub shared: SharedAudio,
@@ -284,7 +288,24 @@ impl Call {
     /// Starts or stops publishing this Mac's screen to the call.
     pub fn toggle_screen_share(&mut self) {
         self.error = None;
-        self.engine_send(Cmd::ShareScreen(!self.sharing, self.settings.share_height));
+        if self.sharing {
+            self.engine_send(Cmd::ShareScreen { on: false, height: self.settings.share_height, fps: self.settings.share_fps, source: self.share_source })
+        } else {
+            self.share_hud = true;
+            self.screen_sources.clear();
+            self.engine_send(Cmd::ListScreens);
+        }
+    }
+
+    /// The HUD's Start button.
+    pub fn start_screen_share(&mut self) {
+        self.share_hud = false;
+        self.engine_send(Cmd::ShareScreen { on: true, height: self.settings.share_height, fps: self.settings.share_fps, source: self.share_source });
+    }
+
+    pub fn set_share_fps(&mut self, fps: u32) {
+        self.settings.share_fps = fps.clamp(1, 60);
+        audio::save(&self.settings);
     }
 
     /// How tall a shared frame may be (720 or 1080), saved with the audio settings.
@@ -346,6 +367,7 @@ impl Call {
                 Ev::Speaking(users) => self.speaking = users.into_iter().collect(),
                 Ev::Ping(ms) => self.ping = Some(ms),
                 Ev::Sharing(on) => { self.sharing = on; if !on { self.view = self.view && on } }
+                Ev::Screens(list) => { self.screen_sources = list; self.share_source = self.share_source.min(self.screen_sources.len().saturating_sub(1)) }
                 Ev::Notice(why) => self.error = Some(why),
                 Ev::Video => {}
             }

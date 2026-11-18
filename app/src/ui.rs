@@ -415,7 +415,7 @@ fn dock(s: &State) -> El {
                 .child(text(if connected { "In voice chat" } else { "Connecting…" }).font(type_::TITLE).color(GREEN()).grow(1.0))
                 .child(if sharing { row().key("sharing-live").h(16.0).px(6.0).radius(4.0).fill(GREEN()).center()
                     .child(text("LIVE").font(type_::SECTION).color(t.knob)) } else { el().size(0.0, 0.0) })
-                .child(icon_btn("screen-toggle", s.call.sharing, false, &SCREEN, |s| s.call.toggle_screen_share()))
+                .child(icon_btn("screen-toggle", s.call.sharing, s.call.sharing, if sharing { &CLOSE } else { &SCREEN }, |s| s.call.toggle_screen_share()))
                 .child(icon_btn("noise-toggle", s.call.settings.noise_suppression, false, &WAVEFORM, |s| { let on = !s.call.settings.noise_suppression; s.call.set_noise_suppression(on) }))
                 .child(icon_btn("voice-leave", false, false, &HANG_UP, leave_voice)))
             .child(match &c.error {
@@ -492,6 +492,51 @@ fn text_viewer(s: &State) -> El {
             .child(text(body.clone()).font(type_::BODY).color(t.text).wrap_anywhere().w_full())
             .scroll(ScrollSpec { stick_bottom: false }).grow(1.0).min_h(0.0));
     row().key("text-view-layer").pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).center().child(scrim).child(card)
+}
+
+/// The pre-share HUD: which screen, quality, fps (audio comes later).
+fn share_hud(s: &State) -> El {
+    if !s.call.share_hud { return el().size(0.0, 0.0) }
+    let (p, t) = (pal(), crate::appearance::theme());
+    let cfg = &s.call.settings;
+    let scrim = el().key("share-scrim").pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+        .fill(oklcha(0.0, 0.0, 0.0, 0.7)).on_press(|s: &mut State| s.call.share_hud = false);
+    let pill = |key: String, label: String, on: bool, f: fn(&mut State)| row().key(key).h(28.0).px(10.0).radius(radius::SM).center()
+        .fill(if on { p.brand } else { p.input })
+        .child(text(label).font(type_::LABEL).color(if on { t.knob } else { t.text }))
+        .cursor(rune::Cursor::Pointer).on_press(move |s: &mut State| f(s));
+    let mut sources = col().gap(2.0);
+    if s.call.screen_sources.is_empty() {
+        sources = sources.child(text("Procurando telas…".to_string()).font(type_::LABEL).color(t.text_secondary));
+    }
+    for (i, name) in s.call.screen_sources.iter().enumerate() {
+        sources = sources.child(row().key(format!("share-src-{i}")).h(30.0).px(10.0).gap(8.0).center_y().radius(radius::SM)
+            .fill(if i == s.call.share_source { p.select } else { oklcha(0.0, 0.0, 0.0, 0.0) }).hover(p.hover)
+            .child(text(name.clone()).font(type_::BODY).color(t.text).truncate().grow(1.0))
+            .cursor(rune::Cursor::Pointer).on_press(move |s: &mut State| s.call.share_source = i));
+    }
+    let quality = |h: u32| { let on = cfg.share_height == h; let mut b = row().key(format!("share-q-{h}")).h(28.0).px(10.0).radius(radius::SM).center()
+        .fill(if on { p.brand } else { p.input }).child(text(format!("{h}p")).font(type_::LABEL).color(if on { t.knob } else { t.text }))
+        .cursor(rune::Cursor::Pointer); if !on { b = b.on_press(move |s: &mut State| s.call.set_share_height(h)) } b };
+    let rate = |f: u32| { let on = cfg.share_fps == f; let mut b = row().key(format!("share-fps-{f}")).h(28.0).px(10.0).radius(radius::SM).center()
+        .fill(if on { p.brand } else { p.input }).child(text(format!("{f} fps")).font(type_::LABEL).color(if on { t.knob } else { t.text }))
+        .cursor(rune::Cursor::Pointer); if !on { b = b.on_press(move |s: &mut State| s.call.set_share_fps(f)) } b };
+    let card = col().key("share-hud").w(520.0).px(16.0).py(14.0).gap(10.0).radius(radius::LG)
+        .fill(p.side).border(1.0, p.line).shadow(8.0, 32.0, t.shadow).on_press(|_: &mut State| {})
+        .child(text("Compartilhar tela".to_string()).font(type_::TITLE).color(t.text))
+        .child(text("Escolha a tela, a qualidade e os quadros por segundo.".to_string()).font(type_::LABEL).color(t.text_secondary))
+        .child(sources)
+        .child(row().gap(6.0).child(text("Qualidade".to_string()).font(type_::LABEL).color(t.text_secondary).w(90.0))
+            .child(quality(720)).child(quality(1080)))
+        .child(row().gap(6.0).child(text("FPS".to_string()).font(type_::LABEL).color(t.text_secondary).w(90.0))
+            .child(rate(15)).child(rate(30)).child(rate(60)))
+        .child(text("Áudio do sistema ainda não é capturado.".to_string()).font(type_::LABEL).color(t.text_secondary))
+        .child(row().gap(8.0).justify_end()
+            .child(pill("share-cancel".into(), "Cancelar".into(), false, |s: &mut State| s.call.share_hud = false))
+            .child(row().key("share-start").h(32.0).px(14.0).radius(radius::SM).center().fill(p.brand)
+                .child(text("Iniciar transmissão".to_string()).font(type_::LABEL).color(t.knob))
+                .cursor(rune::Cursor::Pointer).on_press(|s: &mut State| s.call.start_screen_share())));
+    row().key("share-layer").pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).center().child(scrim).child(card)
 }
 
 /// The small card that explains the voice signal icon: the room's round-trip time.
@@ -1516,7 +1561,7 @@ fn main_view(s: &State, stage: Option<[f32; 2]>) -> El {
     // A mention's card anchors beside this marker at the point the pointer was on.
     let mention_anchor = s.profile.as_ref().and_then(|p| p.at)
         .map_or_else(|| el().size(0.0, 0.0), |(x, y)| el().key("mention-anchor").absolute(x, y).size(1.0, 1.0));
-    all.child(menu_scrim(s)).child(user_menu_scrim(s)).child(msg_menu_scrim(s)).child(status_scrim(s)).child(profile_scrim(s)).child(dock(s)).child(audio_menu(s)).child(ctx_point(s)).child(msg_point(s)).child(user_menu(s)).child(message_menu(s)).child(status_menu(s)).child(mention_anchor).child(profile_card(s)).child(ping_tip(s)).child(text_viewer(s)).child(settings::dialog(s))
+    all.child(menu_scrim(s)).child(user_menu_scrim(s)).child(msg_menu_scrim(s)).child(status_scrim(s)).child(profile_scrim(s)).child(dock(s)).child(audio_menu(s)).child(ctx_point(s)).child(msg_point(s)).child(user_menu(s)).child(message_menu(s)).child(status_menu(s)).child(mention_anchor).child(profile_card(s)).child(ping_tip(s)).child(text_viewer(s)).child(share_hud(s)).child(settings::dialog(s))
         .on_pointer_move_local(|s: &mut State, p, tx| { s.pointer.set([p.window_x, p.window_y]); tx.live_only() })
         .on_window_focus(|s: &mut State, focused, _| set_focus(s, focused))
 }

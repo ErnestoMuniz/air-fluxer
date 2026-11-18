@@ -19,7 +19,7 @@ use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
 use livekit::webrtc::audio_stream::native::NativeAudioStream;
 use livekit::webrtc::video_frame::VideoFormatType;
 use livekit::webrtc::video_stream::native::NativeVideoStream;
-use livekit::webrtc::desktop_capturer::{DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions};
+use livekit::webrtc::desktop_capturer::{CaptureSource, DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions};
 use livekit::webrtc::video_frame::{I420Buffer, VideoFrame, VideoRotation};
 use livekit::webrtc::video_source::VideoResolution;
 use livekit::webrtc::video_source::RtcVideoSource;
@@ -42,8 +42,9 @@ pub enum Cmd {
     Watch(Vec<String>),
     /// Keep the microphone open only to measure its level (the settings menu), outside a call.
     Meter(bool),
-    /// Publish this Mac's screen (the system picker on macOS chooses what to share).
-    ShareScreen(bool, u32),
+    /// Publish this Mac's screen (the HUD chooses the source, quality and fps).
+    ListScreens,
+    ShareScreen { on: bool, height: u32, fps: u32, source: usize },
     Disconnect,
 }
 
@@ -58,6 +59,8 @@ pub enum Ev {
     Ping(u32),
     /// This account started (true) or stopped (false) sharing its screen.
     Sharing(bool),
+    /// The screens/windows the capturer can share (titles, for the HUD).
+    Screens(Vec<String>),
     /// Something failed without closing the room (a screen share denied, say).
     Notice(String),
     /// A picture appeared or went away in `Frames`.
@@ -131,7 +134,7 @@ struct Screen { sid: TrackSid, stop: Arc<AtomicBool>, frames: Arc<std::sync::ato
 impl Drop for Screen { fn drop(&mut self) { self.stop.store(true, Ordering::Relaxed) } }
 
 /// Captures the screen (the macOS picker chooses what) and publishes it as a screen-share track.
-async fn start_screen(room: &Room, height: u32) -> Result<Screen, String> {
+async fn start_screen(room: &Room, height: u32, fps: u32, capture_source: Option<CaptureSource>) -> Result<Screen, String> {
     #[cfg(target_os = "macos")]
     {
         // Screen Recording is a TCC permission: ask before touching ScreenCaptureKit, so the system
@@ -160,11 +163,12 @@ async fn start_screen(room: &Room, height: u32) -> Result<Screen, String> {
     std::thread::Builder::new().name("fluxer-screen".into()).spawn(move || {
         let mut options = DesktopCapturerOptions::new(DesktopCaptureSourceType::Screen);
         options.set_include_cursor(true);
+        options.set_sck_system_picker(false);
         let Some(mut capturer) = DesktopCapturer::new(options) else {
             eprintln!("fluxer: no desktop capturer on this system");
             return;
         };
-        capturer.start_capture(None, move |result| {
+        capturer.start_capture(capture_source, move |result| {
             let Ok(frame) = result else { return };
             seen.fetch_add(1, Ordering::Relaxed);
             let (mut w, mut h) = (frame.width(), frame.height());
@@ -188,7 +192,7 @@ async fn start_screen(room: &Room, height: u32) -> Result<Screen, String> {
         });
         while !flag.load(Ordering::Relaxed) {
             capturer.capture_frame();
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::thread::sleep(std::time::Duration::from_millis((1000 / fps.max(1) as u64).max(1)));
         }
     }).map_err(|e| format!("não foi possível iniciar a captura: {e}"))?;
     Ok(Screen { sid, stop, frames, since: std::time::Instant::now() })
@@ -373,6 +377,7 @@ async fn engine(mut cmds: UnboundedReceiver<Cmd>, out: mpsc::Sender<Ev>, wake: W
     let tell = { let out = out.clone(); let wake = wake.clone(); move || { let _ = out.send(Ev::Video); wake(); } };
     let mut watching: std::collections::HashSet<String> = Default::default();
     let mut live: Option<Live> = None;
+    let mut sources: Vec<CaptureSource> = Vec::new();
     // The green rings come from the sound itself, checked often so they show at once.
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(30));
     // The room's round-trip time, asked from WebRTC every few seconds; not every frame (a stats
@@ -464,11 +469,17 @@ async fn engine(mut cmds: UnboundedReceiver<Cmd>, out: mpsc::Sender<Ev>, wake: W
                         meter = None;
                         if on && live.is_none() { meter = Some(start_capture(mic_choice.clone(), shared.clone(), None)) }
                     }
-                    Cmd::ShareScreen(on, height) => {
+                    Cmd::ListScreens => {
+                        let mut options = DesktopCapturerOptions::new(DesktopCaptureSourceType::Screen);
+                        options.set_sck_system_picker(false);
+                        sources = DesktopCapturer::new(options).map(|c| c.get_source_list()).unwrap_or_default();
+                        send(Ev::Screens(sources.iter().map(|s| s.title()).collect()));
+                    }
+                    Cmd::ShareScreen { on, height, fps, source } => {
                         let Some(l) = live.as_mut() else { continue };
                         if on {
                             if l.screen.is_none() {
-                                match start_screen(&l.room, height).await {
+                                match start_screen(&l.room, height, fps, sources.get(source).cloned()).await {
                                     Ok(s) => { l.screen = Some(s); send(Ev::Sharing(true)) }
                                     Err(e) => send(Ev::Notice(e)),
                                 }
